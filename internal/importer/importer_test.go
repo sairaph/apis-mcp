@@ -396,6 +396,50 @@ window.ui = SwaggerUIBundle({
 	}
 }
 
+func TestImportOpenAPIDiscoversExternalSwaggerInitializer(t *testing.T) {
+	validatorRequests := 0
+	wrongRequests := 0
+	wrong := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		wrongRequests++
+		fmt.Fprint(writer, `{"openapi":"3.0.3","info":{"title":"Wrong","version":"v1"},"paths":{"/wrong":{"get":{"responses":{"200":{"description":"wrong"}}}}}}`)
+	}))
+	defer wrong.Close()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/":
+			fmt.Fprint(writer, `<html><body><div id="swagger-ui"></div><script src="./swagger-initializer.js"></script></body></html>`)
+		case "/docs/swagger-initializer.js":
+			fmt.Fprintf(writer, `const defaultDefinitionUrl = %q;
+const serviceDefinitions = "./openapi.json";
+const definitionURL = serviceDefinitions;
+window.ui = SwaggerUIBundle({url: definitionURL, validatorUrl: "./validator"});`, wrong.URL+"/wrong.json")
+		case "/docs/openapi.json":
+			fmt.Fprint(writer, `{"openapi":"3.0.3","info":{"title":"External","version":"v1"},"paths":{"/external":{"get":{"responses":{"200":{"description":"ok"}}}}}}`)
+		case "/docs/validator":
+			validatorRequests++
+			http.Error(writer, "not a specification", http.StatusBadRequest)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	result, err := importer.ImportOpenAPI(context.Background(), "External Config", "v1", server.URL+"/docs/", importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != "openapi" || result.Source != server.URL+"/docs/openapi.json" || result.Pages != 2 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if validatorRequests != 0 || wrongRequests != 0 {
+		t.Fatalf("non-specification candidates were fetched: validator=%d wrong_default=%d", validatorRequests, wrongRequests)
+	}
+}
+
 func TestImportHTMLCrawlsSameOriginWithinLimitsAndGeneratesMarkdown(t *testing.T) {
 	externalRequests := 0
 	external := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -472,6 +516,114 @@ func TestImportHTMLCrawlsSameOriginWithinLimitsAndGeneratesMarkdown(t *testing.T
 	}
 }
 
+func TestImportHTMLDetectsAndScrapesDocusaurus(t *testing.T) {
+	blogRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html")
+		switch request.URL.Path {
+		case "/docs":
+			fmt.Fprint(writer, `<!doctype html><html class="plugin-docs docs-doc-page"><head>
+<meta name=generator content="Docusaurus v3.10.1"><title>Site chrome title</title></head><body>
+<nav><a href=/blog>Blog</a></nav>
+<aside><ul class=theme-doc-sidebar-menu><li><a href=/docs/second?view=full>Second guide</a><li><a href=/docs>First guide</a></ul></aside>
+<div class="theme-doc-markdown markdown"><header><h1>First Guide<a class=hash-link href=#first>​</a></h1></header>
+<p>Framework-specific content.</p><pre class=language-go><code><span>first line</span><br><span>second line</span></code></pre>
+<div hidden><p>Hidden duplicate content.</p></div></div>
+<aside><p>On this page duplicate.</p></aside><nav class=pagination-nav><a href=/docs/second?view=full>Next</a></nav></body></html>`)
+		case "/docs/second":
+			if request.URL.Query().Get("view") != "full" {
+				http.NotFound(writer, request)
+				return
+			}
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name=generator content="Docusaurus v3.10.1"></head><body>
+<div role=banner>Announcement chrome.</div>
+<ul class=theme-doc-sidebar-menu><li><a href=/docs>First guide</a></ul>
+<div class=generatedIndexPage_fixture><header><h1>Second Guide</h1></header><p>Independent second page.</p></div></body></html>`)
+		case "/blog":
+			blogRequests++
+			fmt.Fprint(writer, `<html><body><h1>Blog</h1></body></html>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	options := importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+		MaxHTMLPages: 5, MaxHTMLDepth: 2,
+	}
+	detection, err := importer.DetectURL(context.Background(), server.URL+"/docs", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detection.Engine != "html" || detection.Framework != "docusaurus" {
+		t.Fatalf("unexpected detection: %+v", detection)
+	}
+	result, err := importer.ImportHTML(context.Background(), "Docusaurus Fixture", "v1", server.URL+"/docs", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Framework != "docusaurus" || result.Pages != 2 || blogRequests != 0 {
+		t.Fatalf("unexpected import: result=%+v blog_requests=%d", result, blogRequests)
+	}
+	var generated string
+	for _, name := range relativeFiles(t, result.Destination) {
+		if name == "_index.md" {
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(result.Destination, name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		generated += string(raw)
+	}
+	for _, wanted := range []string{"# First Guide", "Framework-specific content.", "```go\nfirst line\nsecond line\n```", "# Second Guide", "Independent second page."} {
+		if !strings.Contains(generated, wanted) {
+			t.Errorf("generated Docusaurus Markdown missing %q:\n%s", wanted, generated)
+		}
+	}
+	for _, unwanted := range []string{"Site chrome title", "Blog", "On this page duplicate.", "Hidden duplicate content.", "Announcement chrome.", "hash-link"} {
+		if strings.Contains(generated, unwanted) {
+			t.Errorf("generated Docusaurus Markdown contains %q:\n%s", unwanted, generated)
+		}
+	}
+}
+
+func TestDetectAndImportHTMLRejectPlainText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(writer, "# Plain Markdown\n\nThis is not an HTML document.\n")
+	}))
+	defer server.Close()
+
+	options := importer.Options{LibraryRoot: t.TempDir(), Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client()}
+	if _, err := importer.DetectURL(context.Background(), server.URL, options); err == nil || !strings.Contains(err.Error(), "neither OpenAPI nor HTML") {
+		t.Fatalf("expected detection rejection, got %v", err)
+	}
+	if _, err := importer.ImportHTML(context.Background(), "Plain", "v1", server.URL, options); err == nil || !strings.Contains(err.Error(), "not a static HTML document") {
+		t.Fatalf("expected HTML rejection, got %v", err)
+	}
+}
+
+func TestImportHTMLAcceptsUTF8BOM(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(append([]byte{0xef, 0xbb, 0xbf}, []byte(`<!doctype html><html><body><main><h1>BOM Guide</h1><p>Valid content.</p></main></body></html>`)...))
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	result, err := importer.ImportHTML(context.Background(), "BOM", "v1", server.URL, importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(), MaxHTMLPages: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Pages != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
 func TestImportHTMLRejectsExcessiveTreeDepthAndNodes(t *testing.T) {
 	tests := []struct {
 		name string
@@ -480,6 +632,7 @@ func TestImportHTMLRejectsExcessiveTreeDepthAndNodes(t *testing.T) {
 	}{
 		{name: "depth", body: "<html><body>" + strings.Repeat("<div>", 1_000) + "bounded", want: "maximum tree depth"},
 		{name: "nodes", body: "<html><body>" + strings.Repeat("<br>", 50_001), want: "maximum node count"},
+		{name: "prefixed nodes", body: "prefix<html><body>" + strings.Repeat("<br>", 50_001), want: "maximum node count"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -52,8 +52,12 @@ var operationMethods = map[string]bool{
 }
 
 var (
-	scriptConfigURL = regexp.MustCompile(`(?i)["']?(?:url|specUrl|spec-url)["']?\s*:\s*["']([^"']+)["']`)
-	redocInitURL    = regexp.MustCompile(`(?i)\bRedoc\.init\s*\(\s*["']([^"']+)["']`)
+	scriptConfigURL      = regexp.MustCompile(`(?i)(?:^|[,{]\s*)["']?(?:url|specUrl|spec-url)["']?\s*:\s*["']([^"']+)["']`)
+	scriptConfigVariable = regexp.MustCompile(`(?i)(?:^|[,{]\s*)["']?(?:url|specUrl|spec-url)["']?\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)`)
+	scriptStringVariable = regexp.MustCompile(`\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*["']([^"']+)["']`)
+	scriptVariableAlias  = regexp.MustCompile(`\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;`)
+	hostConfigURL        = regexp.MustCompile("(?i)([a-z0-9.-]+)=(https?://[^\\s\"'`,;]+)")
+	redocInitURL         = regexp.MustCompile(`(?i)\bRedoc\.init\s*\(\s*["']([^"']+)["']`)
 )
 
 // ImportOpenAPI imports an OpenAPI 3.x or Swagger 2.x JSON/YAML document.
@@ -84,34 +88,54 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 			return Result{}, errors.New("local OpenAPI HTML landing pages are not supported")
 		}
 		candidates := openAPISpecCandidates(landing, base)
-		if len(candidates) == 0 {
+		configScripts := openAPIConfigScripts(landing, base)
+		if len(candidates) == 0 && len(configScripts) == 0 {
 			return Result{}, errors.New("OpenAPI HTML page contains no discoverable specification URL")
 		}
 		var candidateErrors []error
-		for _, candidate := range candidates {
-			candidateRaw, candidateSource, readErr := reader.read(ctx, candidate, base)
+		found := false
+		tryCandidates := func(discovered []string) {
+			for _, candidate := range discovered {
+				candidateRaw, candidateSource, readErr := reader.read(ctx, candidate, base)
+				if readErr != nil {
+					candidateErrors = append(candidateErrors, readErr)
+					continue
+				}
+				candidateDocument, candidateKind, candidateErr := parseAPIDescription(candidateRaw)
+				if candidateErr != nil {
+					candidateErrors = append(candidateErrors, fmt.Errorf("parse discovered specification %s: %w", candidateSource, candidateErr))
+					continue
+				}
+				document, kind, provenance = candidateDocument, candidateKind, candidateSource
+				found = true
+				return
+			}
+		}
+		tryCandidates(candidates)
+		for _, scriptSource := range configScripts {
+			if found {
+				break
+			}
+			script, _, readErr := reader.read(ctx, scriptSource, base)
 			if readErr != nil {
 				candidateErrors = append(candidateErrors, readErr)
 				continue
 			}
-			candidateDocument, candidateKind, candidateErr := parseAPIDescription(candidateRaw)
-			if candidateErr != nil {
-				candidateErrors = append(candidateErrors, fmt.Errorf("parse discovered specification %s: %w", candidateSource, candidateErr))
-				continue
-			}
-			document, kind, provenance = candidateDocument, candidateKind, candidateSource
-			parseErr = nil
-			break
+			tryCandidates(openAPIConfigCandidates(string(script), base))
 		}
-		if parseErr != nil {
+		if !found {
+			if len(candidateErrors) == 0 {
+				return Result{}, errors.New("OpenAPI HTML page contains no discoverable specification URL")
+			}
 			return Result{}, fmt.Errorf("no discovered OpenAPI specification could be imported: %w", errors.Join(candidateErrors...))
 		}
 	}
 	description := strings.TrimSpace(document.Info.Description)
 	pages := 1
+	reportProgress(options, Progress{Stage: "generating", Framework: kind, URL: provenance, Pages: pages})
 	result, err := publish(ctx, options, name, version, func(stage string) error {
 		metadata := manifest{
-			Name: name, Version: version, Description: description,
+			Name: name, Version: version, Description: description, Collections: options.Collections,
 			SourceRoot: provenance, SourceType: kind, ImportedFrom: provenance,
 		}
 		if err := writeCanonicalFile(stage, "_index.md", metadata, "This document set was generated from an API description."); err != nil {
@@ -166,6 +190,7 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 					return err
 				}
 				pages++
+				reportProgress(options, Progress{Stage: "page", Framework: kind, URL: provenance, Pages: pages})
 			}
 		}
 
@@ -193,6 +218,7 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 				return err
 			}
 			pages++
+			reportProgress(options, Progress{Stage: "page", Framework: kind, URL: provenance, Pages: pages})
 		}
 		return nil
 	})
@@ -200,6 +226,7 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 		return Result{}, err
 	}
 	result.Kind, result.Source, result.Pages = kind, provenance, pages
+	reportProgress(options, Progress{Stage: "completed", Framework: kind, URL: provenance, Pages: pages})
 	return result, nil
 }
 
@@ -226,16 +253,7 @@ func parseAPIDescription(raw []byte) (apiDescription, string, error) {
 func openAPISpecCandidates(root *htmlNode, base *url.URL) []string {
 	var candidates []string
 	add := func(value string) {
-		value = strings.TrimSpace(strings.ReplaceAll(value, `\/`, `/`))
-		if value == "" || strings.ContainsAny(value, "{}\n\r") {
-			return
-		}
-		resolved, err := base.Parse(value)
-		if err != nil || resolved.Host == "" || resolved.Scheme != "http" && resolved.Scheme != "https" {
-			return
-		}
-		resolved.Fragment = ""
-		candidates = append(candidates, resolved.String())
+		appendOpenAPIURL(&candidates, base, value)
 	}
 	walkHTML(root, func(node *htmlNode) {
 		identity := strings.ToLower(node.tag + " " + node.attrs["id"] + " " + node.attrs["class"])
@@ -261,27 +279,105 @@ func openAPISpecCandidates(root *htmlNode, base *url.URL) []string {
 			return
 		}
 		script := htmlNodeText(node)
-		lower := strings.ToLower(script + " " + node.attrs["id"] + " " + node.attrs["class"])
-		if strings.Contains(lower, "swaggeruibundle") || strings.Contains(lower, "swaggerui(") || strings.Contains(lower, "swagger-config") {
-			for _, match := range scriptConfigURL.FindAllStringSubmatch(script, -1) {
-				add(match[1])
-			}
-		}
-		if strings.Contains(lower, "redoc") {
-			for _, match := range redocInitURL.FindAllStringSubmatch(script, -1) {
-				add(match[1])
-			}
-			for _, match := range scriptConfigURL.FindAllStringSubmatch(script, -1) {
-				add(match[1])
-			}
+		for _, candidate := range openAPIConfigCandidates(script+" "+node.attrs["id"]+" "+node.attrs["class"], base) {
+			add(candidate)
 		}
 	})
+	return uniqueStrings(candidates)
+}
+
+func openAPIConfigScripts(root *htmlNode, base *url.URL) []string {
+	var scripts []string
+	walkHTML(root, func(node *htmlNode) {
+		if node.tag != "script" || node.attrs["src"] == "" {
+			return
+		}
+		identity := strings.ToLower(node.attrs["src"] + " " + node.attrs["id"] + " " + node.attrs["class"])
+		if strings.Contains(identity, "swagger-initializer") || strings.Contains(identity, "swagger-config") {
+			appendOpenAPIURL(&scripts, base, node.attrs["src"])
+		}
+	})
+	return uniqueStrings(scripts)
+}
+
+func openAPIConfigCandidates(script string, base *url.URL) []string {
+	lower := strings.ToLower(script)
+	var candidates []string
+	if strings.Contains(lower, "swaggeruibundle") || strings.Contains(lower, "swaggerui(") || strings.Contains(lower, "swagger-config") {
+		for _, match := range scriptConfigURL.FindAllStringSubmatch(script, -1) {
+			appendOpenAPIURL(&candidates, base, match[1])
+		}
+		if len(candidates) == 0 {
+			stringsByVariable := make(map[string]string)
+			for _, match := range scriptStringVariable.FindAllStringSubmatch(script, -1) {
+				stringsByVariable[match[1]] = match[2]
+			}
+			aliases := make(map[string]string)
+			for _, match := range scriptVariableAlias.FindAllStringSubmatch(script, -1) {
+				aliases[match[1]] = match[2]
+			}
+			for _, match := range scriptConfigVariable.FindAllStringSubmatch(script, -1) {
+				variable := match[1]
+				for range len(aliases) + 1 {
+					if value, ok := stringsByVariable[variable]; ok {
+						appendOpenAPIURL(&candidates, base, value)
+						break
+					}
+					next, ok := aliases[variable]
+					if !ok || next == variable {
+						break
+					}
+					variable = next
+				}
+			}
+		}
+		if len(candidates) == 0 && strings.Contains(lower, "location.host") {
+			for _, match := range hostConfigURL.FindAllStringSubmatch(script, -1) {
+				candidate, err := url.Parse(match[2])
+				if err == nil && strings.EqualFold(match[1], base.Hostname()) && likelyOpenAPISpecURL(candidate) {
+					appendOpenAPIURL(&candidates, base, match[2])
+				}
+			}
+		}
+	}
+	if strings.Contains(lower, "redoc") {
+		for _, match := range redocInitURL.FindAllStringSubmatch(script, -1) {
+			appendOpenAPIURL(&candidates, base, match[1])
+		}
+		for _, match := range scriptConfigURL.FindAllStringSubmatch(script, -1) {
+			appendOpenAPIURL(&candidates, base, match[1])
+		}
+	}
+	return uniqueStrings(candidates)
+}
+
+func likelyOpenAPISpecURL(candidate *url.URL) bool {
+	path := strings.ToLower(candidate.Path)
+	extension := strings.ToLower(filepath.Ext(path))
+	return extension == ".json" || extension == ".yaml" || extension == ".yml" ||
+		strings.Contains(path, "openapi") || strings.Contains(path, "swagger") || strings.Contains(path, "api-docs")
+}
+
+func appendOpenAPIURL(candidates *[]string, base *url.URL, value string) {
+	value = strings.TrimSpace(strings.ReplaceAll(value, `\/`, `/`))
+	if value == "" || strings.ContainsAny(value, "{}\n\r") {
+		return
+	}
+	resolved, err := base.Parse(value)
+	if err != nil || resolved.Host == "" || resolved.Scheme != "http" && resolved.Scheme != "https" {
+		return
+	}
+	resolved.Fragment = ""
+	*candidates = append(*candidates, resolved.String())
+}
+
+func uniqueStrings(values []string) []string {
 	unique := make(map[string]bool)
-	output := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		if !unique[candidate] {
-			unique[candidate] = true
-			output = append(output, candidate)
+	output := make([]string, 0, len(values))
+	for _, value := range values {
+		if !unique[value] {
+			unique[value] = true
+			output = append(output, value)
 		}
 	}
 	return output

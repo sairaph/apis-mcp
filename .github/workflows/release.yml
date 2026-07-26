@@ -18,6 +18,9 @@ jobs:
           cache: true
       - run: go vet ./...
       - run: go test ./...
+      - run: go vet -tags=dev ./internal/cmd/ingest
+      - run: go test -tags=dev ./internal/cmd/ingest
+      - run: go test -race -tags=dev ./internal/cmd/ingest
 
   build:
     needs: test

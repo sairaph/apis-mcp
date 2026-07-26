@@ -35,20 +35,51 @@ type Options struct {
 	LibraryRoot    string
 	Rebuild        func(context.Context) error
 	HTTPClient     *http.Client
+	Collections    []string
+	JobID          string
+	HTMLScope      string
+	HTMLLimitsSet  bool
+	Progress       func(Progress)
 	MaxSourceBytes int64
 	MaxTotalBytes  int64
 	MaxHTMLPages   int
 	MaxHTMLDepth   int
 }
 
+// Progress describes a durable ingestion progress update.
+type Progress struct {
+	Stage     string `json:"stage"`
+	Message   string `json:"message,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Framework string `json:"framework,omitempty"`
+	Pages     int    `json:"pages,omitempty"`
+	Queued    int    `json:"queued,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// RollbackError reports a failed import together with a failure to restore the
+// previous library state.
+type RollbackError struct {
+	Cause    error
+	Rollback error
+}
+
+func (e *RollbackError) Error() string {
+	return fmt.Sprintf("validate imported documentation: %v (rollback failed: %v)", e.Cause, e.Rollback)
+}
+
+func (e *RollbackError) Unwrap() []error { return []error{e.Cause, e.Rollback} }
+
 // Result describes one successfully published document set.
 type Result struct {
 	Kind        string `json:"kind"`
+	Framework   string `json:"framework,omitempty"`
 	Name        string `json:"name"`
 	Version     string `json:"version"`
 	Source      string `json:"source"`
 	Destination string `json:"destination"`
 	Pages       int    `json:"pages"`
+	Truncated   bool   `json:"truncated,omitempty"`
 }
 
 // CollisionError reports all known paths participating in an import identity
@@ -195,19 +226,33 @@ func normalizeOptions(options Options) (Options, error) {
 	if options.HTTPClient == nil {
 		options.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	if options.MaxHTMLPages == 0 {
-		options.MaxHTMLPages = DefaultMaxHTMLPages
+	if !options.HTMLLimitsSet {
+		if options.MaxHTMLPages == 0 {
+			options.MaxHTMLPages = DefaultMaxHTMLPages
+		}
+		if options.MaxHTMLDepth == 0 {
+			options.MaxHTMLDepth = DefaultMaxHTMLDepth
+		}
 	}
-	if options.MaxHTMLDepth == 0 {
-		options.MaxHTMLDepth = DefaultMaxHTMLDepth
+	if options.MaxHTMLPages == 0 || options.MaxHTMLPages < -1 {
+		return Options{}, errors.New("HTML page limit must be -1 (unlimited) or positive")
 	}
-	if options.MaxHTMLPages < 1 || options.MaxHTMLPages > maxHTMLPages {
-		return Options{}, fmt.Errorf("HTML page limit must be between 1 and %d", maxHTMLPages)
+	if options.MaxHTMLDepth < -1 {
+		return Options{}, errors.New("HTML depth limit must be -1 (unlimited) or non-negative")
 	}
-	if options.MaxHTMLDepth < 0 || options.MaxHTMLDepth > maxHTMLDepth {
-		return Options{}, fmt.Errorf("HTML depth limit must be between 0 and %d", maxHTMLDepth)
+	if options.HTMLScope == "" {
+		options.HTMLScope = "domain"
+	}
+	if options.HTMLScope != "domain" && options.HTMLScope != "path" {
+		return Options{}, errors.New("HTML scope must be path or domain")
 	}
 	return options, nil
+}
+
+func reportProgress(options Options, progress Progress) {
+	if options.Progress != nil {
+		options.Progress(progress)
+	}
 }
 
 func newSourceReader(options Options) *sourceReader {
@@ -323,6 +368,11 @@ func publish(ctx context.Context, options Options, name, version string, populat
 	if err := populate(stage); err != nil {
 		return Result{}, fmt.Errorf("stage documentation: %w", err)
 	}
+	if options.JobID != "" {
+		if err := writeFile(stage, ".apis-mcp-ingest-job", []byte(options.JobID+"\n")); err != nil {
+			return Result{}, fmt.Errorf("stage ingestion ownership: %w", err)
+		}
+	}
 	if _, err := os.Stat(filepath.Join(stage, "_index.md")); err != nil {
 		return Result{}, fmt.Errorf("staged documentation has no _index.md: %w", err)
 	}
@@ -389,7 +439,7 @@ func publish(ctx context.Context, options Options, name, version string, populat
 		syncErr := syncPublicationParents(destination, libraryRoot)
 		rebuildErr := options.Rebuild(context.WithoutCancel(ctx))
 		if rollbackErr := errors.Join(removeErr, syncErr, rebuildErr); rollbackErr != nil {
-			return Result{}, fmt.Errorf("validate imported documentation: %w (rollback failed: %v)", err, rollbackErr)
+			return Result{}, &RollbackError{Cause: err, Rollback: rollbackErr}
 		}
 		return Result{}, fmt.Errorf("validate imported documentation: %w", err)
 	}

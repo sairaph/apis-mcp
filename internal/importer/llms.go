@@ -95,7 +95,7 @@ func ImportLLMSTxt(ctx context.Context, name, version, source string, options Op
 
 	result, err := publish(ctx, options, name, version, func(stage string) error {
 		metadata := manifest{
-			Name: name, Version: version,
+			Name: name, Version: version, Collections: options.Collections,
 			SourceRoot: provenance, SourceType: "llms.txt", ImportedFrom: provenance,
 		}
 		if err := writeCanonicalFile(stage, "_index.md", metadata, "This document set was imported from llms.txt."); err != nil {

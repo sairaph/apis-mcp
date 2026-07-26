@@ -123,6 +123,40 @@ go vet ./...
 CGO_ENABLED=0 go build -trimpath -o apis-mcp .
 ```
 
+The repository also includes a development-only URL ingestion command. It
+detects the source framework or format, dispatches to the matching importer,
+writes canonical Markdown, and rebuilds a searchable SQLite generation without
+adding another shipped CLI:
+
+```sh
+go run -tags=dev ./internal/cmd/ingest start -out /tmp/apis-ingest \
+  -name "Petstore" -version v2 -collections examples,petstore \
+  https://petstore.swagger.io/
+```
+
+`-name` defaults to the URL host and `-version` defaults to `latest`. The
+repeatable `-collections` flag accepts comma-separated collection IDs. The
+detached job defaults to unlimited pages and depth while staying under the
+starting documentation path. Use `-scope domain` to crawl the entire origin,
+or set optional `-max-pages` and `-max-depth` safeguards.
+
+Control and subscribe to the persisted job from separate processes:
+
+```sh
+go run -tags=dev ./internal/cmd/ingest status -out /tmp/apis-ingest JOB_ID
+go run -tags=dev ./internal/cmd/ingest watch -out /tmp/apis-ingest JOB_ID
+go run -tags=dev ./internal/cmd/ingest cancel -out /tmp/apis-ingest JOB_ID
+go run -tags=dev ./internal/cmd/ingest list -out /tmp/apis-ingest
+```
+
+`watch` streams durable JSON events for detection, each page, publication,
+indexing, cancellation, failure, and completion. Successful jobs write
+canonical Markdown and a searchable SQLite generation below `-out`; canceled
+jobs publish neither. The command's `dev` build constraint and separate `main`
+package keep it out of release binaries.
+Framework and format coverage is tracked in
+[`docs/ingestion-matrix.md`](docs/ingestion-matrix.md).
+
 The full agent-facing behavior is specified in
 [`docs/tool-contract.md`](docs/tool-contract.md).
 

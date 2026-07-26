@@ -1,10 +1,11 @@
 package importer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"html"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -12,22 +13,23 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	xhtml "golang.org/x/net/html"
 )
 
 const (
 	DefaultMaxHTMLPages = 50
 	DefaultMaxHTMLDepth = 3
-	maxHTMLPages        = 200
-	maxHTMLDepth        = 10
 	maxHTMLTreeDepth    = 128
 	maxHTMLNodes        = 50_000
 )
 
 type htmlNode struct {
-	tag      string
-	attrs    map[string]string
-	text     string
-	children []*htmlNode
+	tag          string
+	attrs        map[string]string
+	text         string
+	children     []*htmlNode
+	htmlDocument bool
 }
 
 type crawledPage struct {
@@ -35,6 +37,13 @@ type crawledPage struct {
 	description string
 	source      string
 	markdown    string
+}
+
+type htmlDocumentView struct {
+	framework     string
+	content       *htmlNode
+	linkRoots     []*htmlNode
+	includeHeader bool
 }
 
 // ImportHTML crawls a bounded set of static, same-origin HTML pages and
@@ -52,12 +61,16 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		return Result{}, errors.New("HTML import source must be an HTTP(S) URL")
 	}
 	start.Fragment = ""
+	scopePath := "/"
+	if options.HTMLScope == "path" {
+		scopePath = documentationPathScope(start.Path)
+	}
 
 	// A same-origin link must not escape through an HTTP redirect either.
 	client := *options.HTTPClient
 	previousRedirectPolicy := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if !sameOrigin(start, request.URL) {
+		if !sameOrigin(start, request.URL) || options.HTMLScope == "path" && !withinDocumentationPath(request.URL.Path, scopePath) {
 			return errors.New("HTML crawl redirect crosses the source origin")
 		}
 		if previousRedirectPolicy != nil {
@@ -77,9 +90,20 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 	}
 	queue := []pendingPage{{source: start.String()}}
 	seen := map[string]bool{start.String(): true}
-	pages := make([]crawledPage, 0, options.MaxHTMLPages)
+	processed := make(map[string]bool)
+	pageCapacity := options.MaxHTMLPages
+	if pageCapacity < 0 {
+		pageCapacity = DefaultMaxHTMLPages
+	}
+	pages := make([]crawledPage, 0, pageCapacity)
 	rootSource := start.String()
-	for len(queue) > 0 && len(pages) < options.MaxHTMLPages {
+	rootFramework := ""
+	crawlLimited := false
+	var crawlErrors []error
+	for len(queue) > 0 && (options.MaxHTMLPages < 0 || len(pages) < options.MaxHTMLPages) {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		pending := queue[0]
 		queue = queue[1:]
 		raw, provenance, readErr := reader.read(ctx, pending.source, nil)
@@ -87,10 +111,16 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			if len(pages) == 0 {
 				return Result{}, readErr
 			}
+			if rootFramework != "" && rootFramework != "unknown" {
+				crawlErrors = append(crawlErrors, fmt.Errorf("fetch framework page %s: %w", pending.source, readErr))
+			}
 			continue
 		}
 		pageURL, parseErr := url.Parse(provenance)
 		if parseErr != nil || !sameOrigin(start, pageURL) {
+			continue
+		}
+		if processed[provenance] {
 			continue
 		}
 		document, parseErr := parseHTML(raw)
@@ -101,13 +131,25 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			if len(pages) == 0 {
 				return Result{}, errors.New("source is not a static HTML document")
 			}
+			if rootFramework != "" && rootFramework != "unknown" {
+				crawlErrors = append(crawlErrors, fmt.Errorf("framework page is not HTML: %s", provenance))
+			}
 			continue
 		}
 		if len(pages) == 0 {
 			rootSource = provenance
 		}
+		view := inspectHTMLDocument(document)
+		if len(pages) == 0 {
+			rootFramework = view.framework
+			reportProgress(options, Progress{Stage: "detected", Framework: rootFramework, URL: provenance})
+		} else if rootFramework != "" && view.framework != rootFramework {
+			crawlErrors = append(crawlErrors, fmt.Errorf("framework changed from %s to %s at %s", rootFramework, view.framework, provenance))
+			continue
+		}
 		seen[provenance] = true
-		title, markdown := htmlToMarkdown(document, pageURL)
+		processed[provenance] = true
+		title, markdown := htmlToMarkdown(view.content, pageURL, view.includeHeader)
 		if title == "" {
 			title = pageTitleFromURL(pageURL)
 		}
@@ -118,26 +160,39 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			title: title, description: htmlMetadataDescription(document),
 			source: provenance, markdown: markdown,
 		})
+		reportProgress(options, Progress{Stage: "page", Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)})
 
-		if pending.depth >= options.MaxHTMLDepth {
+		linkedPages := htmlPageLinks(view.linkRoots, pageURL, options.HTMLScope, scopePath)
+		if options.MaxHTMLDepth >= 0 && pending.depth >= options.MaxHTMLDepth {
+			for _, linked := range linkedPages {
+				if !seen[linked] {
+					crawlLimited = true
+					break
+				}
+			}
 			continue
 		}
-		for _, linked := range htmlPageLinks(document, pageURL) {
-			if len(seen) >= options.MaxHTMLPages || seen[linked] {
+		for _, linked := range linkedPages {
+			if seen[linked] {
 				continue
 			}
 			seen[linked] = true
 			queue = append(queue, pendingPage{source: linked, depth: pending.depth + 1})
 		}
 	}
+	if len(crawlErrors) > 0 {
+		return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, errors.Join(crawlErrors...))
+	}
 	if len(pages) == 0 {
 		return Result{}, errors.New("HTML crawl produced no pages")
 	}
 
 	description := pages[0].description
+	truncated := crawlLimited || len(queue) > 0
+	reportProgress(options, Progress{Stage: "publishing", Framework: rootFramework, Pages: len(pages), Truncated: truncated})
 	result, err := publish(ctx, options, name, version, func(stage string) error {
 		metadata := manifest{
-			Name: name, Version: version, Description: description,
+			Name: name, Version: version, Description: description, Collections: options.Collections,
 			SourceRoot: rootSource, SourceType: "html", ImportedFrom: rootSource,
 		}
 		if err := writeCanonicalFile(stage, "_index.md", metadata, "This document set was generated from static HTML pages."); err != nil {
@@ -159,7 +214,9 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 	if err != nil {
 		return Result{}, err
 	}
-	result.Kind, result.Source, result.Pages = "html", rootSource, len(pages)
+	result.Kind, result.Framework, result.Source, result.Pages = "html", rootFramework, rootSource, len(pages)
+	result.Truncated = truncated
+	reportProgress(options, Progress{Stage: "completed", Framework: rootFramework, Pages: len(pages), Truncated: truncated})
 	return result, nil
 }
 
@@ -179,195 +236,97 @@ func htmlMetadataDescription(root *htmlNode) string {
 }
 
 func parseHTML(raw []byte) (*htmlNode, error) {
-	root := &htmlNode{tag: "document"}
-	stack := []*htmlNode{root}
+	isDocument, err := inspectHTMLSource(raw)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := xhtml.Parse(bytes.NewReader(raw))
+	if err != nil {
+		if strings.Contains(err.Error(), "open stack of elements exceeds") {
+			return nil, fmt.Errorf("HTML document exceeds maximum tree depth of %d: %w", maxHTMLTreeDepth, err)
+		}
+		return nil, err
+	}
+	root := &htmlNode{tag: "document", htmlDocument: isDocument}
 	nodes := 1
-	text := string(raw)
-	lower := strings.ToLower(text)
-	for position := 0; position < len(text); {
-		if text[position] != '<' {
-			next := strings.IndexByte(text[position:], '<')
-			if next < 0 {
-				next = len(text) - position
-			}
-			if err := appendHTMLText(stack[len(stack)-1], text[position:position+next], &nodes); err != nil {
-				return nil, err
-			}
-			position += next
-			continue
+	var convert func(*xhtml.Node, *htmlNode, int) error
+	convert = func(source *xhtml.Node, parent *htmlNode, depth int) error {
+		if depth > maxHTMLTreeDepth {
+			return fmt.Errorf("HTML document exceeds maximum tree depth of %d", maxHTMLTreeDepth)
 		}
-		if strings.HasPrefix(text[position:], "<!--") {
-			end := strings.Index(text[position+4:], "-->")
-			if end < 0 {
-				break
-			}
-			position += end + 7
-			continue
-		}
-		end := htmlTagEnd(text, position+1)
-		if end < 0 {
-			if err := appendHTMLText(stack[len(stack)-1], text[position:], &nodes); err != nil {
-				return nil, err
-			}
-			break
-		}
-		rawTag := strings.TrimSpace(text[position+1 : end])
-		position = end + 1
-		if rawTag == "" || rawTag[0] == '!' || rawTag[0] == '?' {
-			continue
-		}
-		if rawTag[0] == '/' {
-			name := htmlTagName(rawTag[1:])
-			for index := len(stack) - 1; index > 0; index-- {
-				if stack[index].tag == name {
-					stack = stack[:index]
-					break
+		for current := source; current != nil; current = current.NextSibling {
+			var converted *htmlNode
+			switch current.Type {
+			case xhtml.ElementNode:
+				attributes := make(map[string]string, len(current.Attr))
+				for _, attribute := range current.Attr {
+					attributes[strings.ToLower(attribute.Key)] = attribute.Val
 				}
-			}
-			continue
-		}
-		selfClosing := strings.HasSuffix(strings.TrimSpace(rawTag), "/")
-		name := htmlTagName(rawTag)
-		if name == "" {
-			continue
-		}
-		if len(stack) > maxHTMLTreeDepth {
-			return nil, fmt.Errorf("HTML document exceeds maximum tree depth of %d", maxHTMLTreeDepth)
-		}
-		nodes++
-		if nodes > maxHTMLNodes {
-			return nil, fmt.Errorf("HTML document exceeds maximum node count of %d", maxHTMLNodes)
-		}
-		node := &htmlNode{tag: name, attrs: htmlAttributes(rawTag[len(name):])}
-		parent := stack[len(stack)-1]
-		parent.children = append(parent.children, node)
-		if selfClosing || htmlVoidElement(name) {
-			continue
-		}
-		if name == "script" || name == "style" {
-			closing := "</" + name
-			relative := strings.Index(lower[position:], closing)
-			if relative < 0 {
-				if err := appendHTMLText(node, text[position:], &nodes); err != nil {
-					return nil, err
+				converted = &htmlNode{tag: strings.ToLower(current.Data), attrs: attributes}
+			case xhtml.TextNode:
+				if current.Data == "" {
+					continue
 				}
-				break
+				converted = &htmlNode{text: current.Data}
+			default:
+				if err := convert(current.FirstChild, parent, depth); err != nil {
+					return err
+				}
+				continue
 			}
-			if err := appendHTMLText(node, text[position:position+relative], &nodes); err != nil {
-				return nil, err
+			nodes++
+			if nodes > maxHTMLNodes {
+				return fmt.Errorf("HTML document exceeds maximum node count of %d", maxHTMLNodes)
 			}
-			position += relative
-			continue
+			parent.children = append(parent.children, converted)
+			if err := convert(current.FirstChild, converted, depth+1); err != nil {
+				return err
+			}
 		}
-		stack = append(stack, node)
+		return nil
+	}
+	if err := convert(parsed.FirstChild, root, 1); err != nil {
+		return nil, err
 	}
 	return root, nil
 }
 
-func htmlTagEnd(value string, start int) int {
-	var quote byte
-	for index := start; index < len(value); index++ {
-		character := value[index]
-		if quote != 0 {
-			if character == quote {
-				quote = 0
+func inspectHTMLSource(raw []byte) (bool, error) {
+	tokenizer := xhtml.NewTokenizer(bytes.NewReader(raw))
+	nodes := 1
+	isDocument := false
+	for {
+		tokenType := tokenizer.Next()
+		switch tokenType {
+		case xhtml.ErrorToken:
+			if errors.Is(tokenizer.Err(), io.EOF) {
+				return isDocument, nil
 			}
-			continue
-		}
-		if character == '\'' || character == '"' {
-			quote = character
-		} else if character == '>' {
-			return index
-		}
-	}
-	return -1
-}
-
-func htmlTagName(value string) string {
-	value = strings.TrimSpace(value)
-	end := 0
-	for end < len(value) && (unicode.IsLetter(rune(value[end])) || unicode.IsDigit(rune(value[end])) || value[end] == '-' || value[end] == ':') {
-		end++
-	}
-	return strings.ToLower(value[:end])
-}
-
-func htmlAttributes(value string) map[string]string {
-	attributes := make(map[string]string)
-	for position := 0; position < len(value); {
-		for position < len(value) && (unicode.IsSpace(rune(value[position])) || value[position] == '/') {
-			position++
-		}
-		start := position
-		for position < len(value) && !unicode.IsSpace(rune(value[position])) && value[position] != '=' && value[position] != '/' {
-			position++
-		}
-		if start == position {
-			position++
-			continue
-		}
-		name := strings.ToLower(value[start:position])
-		for position < len(value) && unicode.IsSpace(rune(value[position])) {
-			position++
-		}
-		attributeValue := ""
-		if position < len(value) && value[position] == '=' {
-			position++
-			for position < len(value) && unicode.IsSpace(rune(value[position])) {
-				position++
+			return false, tokenizer.Err()
+		case xhtml.DoctypeToken:
+			if strings.EqualFold(tokenizer.Token().Data, "html") {
+				isDocument = true
 			}
-			if position < len(value) && (value[position] == '\'' || value[position] == '"') {
-				quote := value[position]
-				position++
-				start = position
-				for position < len(value) && value[position] != quote {
-					position++
-				}
-				attributeValue = value[start:position]
-				if position < len(value) {
-					position++
-				}
-			} else {
-				start = position
-				for position < len(value) && !unicode.IsSpace(rune(value[position])) && value[position] != '/' {
-					position++
-				}
-				attributeValue = value[start:position]
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
+			token := tokenizer.Token()
+			switch strings.ToLower(token.Data) {
+			case "html", "head", "body", "title", "main", "article":
+				isDocument = true
+			}
+			nodes++
+		case xhtml.TextToken:
+			if len(tokenizer.Text()) > 0 {
+				nodes++
 			}
 		}
-		attributes[name] = html.UnescapeString(attributeValue)
-	}
-	return attributes
-}
-
-func appendHTMLText(parent *htmlNode, value string, nodes *int) error {
-	if value != "" {
-		*nodes = *nodes + 1
-		if *nodes > maxHTMLNodes {
-			return fmt.Errorf("HTML document exceeds maximum node count of %d", maxHTMLNodes)
+		if nodes > maxHTMLNodes {
+			return false, fmt.Errorf("HTML document exceeds maximum node count of %d", maxHTMLNodes)
 		}
-		parent.children = append(parent.children, &htmlNode{text: html.UnescapeString(value)})
-	}
-	return nil
-}
-
-func htmlVoidElement(name string) bool {
-	switch name {
-	case "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr":
-		return true
-	default:
-		return false
 	}
 }
 
 func isHTMLDocument(root *htmlNode) bool {
-	found := false
-	walkHTML(root, func(node *htmlNode) {
-		if node.tag == "html" || node.tag == "body" || node.tag == "title" || node.tag == "main" || node.tag == "article" {
-			found = true
-		}
-	})
-	return found
+	return root != nil && root.htmlDocument
 }
 
 func walkHTML(node *htmlNode, visit func(*htmlNode)) {
@@ -377,15 +336,100 @@ func walkHTML(node *htmlNode, visit func(*htmlNode)) {
 	}
 }
 
-func htmlToMarkdown(root *htmlNode, base *url.URL) (string, string) {
+func inspectHTMLDocument(root *htmlNode) htmlDocumentView {
+	view := htmlDocumentView{content: root, linkRoots: []*htmlNode{root}}
+	view.framework = detectHTMLFramework(root)
+	if view.framework != "docusaurus" {
+		return view
+	}
+	if content := firstHTMLClass(root, "theme-doc-markdown"); content != nil {
+		view.content = content
+		view.includeHeader = true
+	} else if content := firstHTMLClassPrefix(root, "generatedIndexPage_"); content != nil {
+		view.content = content
+		view.includeHeader = true
+	}
+	view.linkRoots = append(htmlClasses(root, "theme-doc-sidebar-menu"), htmlClasses(root, "pagination-nav")...)
+	if len(view.linkRoots) == 0 {
+		view.linkRoots = []*htmlNode{view.content}
+	}
+	return view
+}
+
+func detectHTMLFramework(root *htmlNode) string {
+	framework := ""
+	walkHTML(root, func(node *htmlNode) {
+		if framework != "" {
+			return
+		}
+		if node.tag == "meta" && strings.EqualFold(strings.TrimSpace(node.attrs["name"]), "generator") && strings.HasPrefix(strings.ToLower(strings.TrimSpace(node.attrs["content"])), "docusaurus") {
+			framework = "docusaurus"
+			return
+		}
+		if node.attrs["id"] == "__docusaurus" || hasHTMLClass(node, "docs-doc-page") && hasHTMLClass(node, "plugin-docs") {
+			framework = "docusaurus"
+		}
+	})
+	return framework
+}
+
+func firstHTMLClass(root *htmlNode, class string) *htmlNode {
+	var found *htmlNode
+	walkHTML(root, func(node *htmlNode) {
+		if found == nil && hasHTMLClass(node, class) {
+			found = node
+		}
+	})
+	return found
+}
+
+func firstHTMLClassPrefix(root *htmlNode, prefix string) *htmlNode {
+	var found *htmlNode
+	walkHTML(root, func(node *htmlNode) {
+		if found != nil {
+			return
+		}
+		for _, class := range strings.Fields(node.attrs["class"]) {
+			if strings.HasPrefix(class, prefix) {
+				found = node
+				return
+			}
+		}
+	})
+	return found
+}
+
+func htmlClasses(root *htmlNode, class string) []*htmlNode {
+	var found []*htmlNode
+	walkHTML(root, func(node *htmlNode) {
+		if hasHTMLClass(node, class) {
+			found = append(found, node)
+		}
+	})
+	return found
+}
+
+func hasHTMLClass(node *htmlNode, wanted string) bool {
+	for _, class := range strings.Fields(node.attrs["class"]) {
+		if class == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func htmlToMarkdown(root *htmlNode, base *url.URL, includeHeader bool) (string, string) {
 	title := ""
 	walkHTML(root, func(node *htmlNode) {
+		if title == "" && node.tag == "h1" {
+			title = renderHTMLInline(node, base, nil)
+		}
 		if title == "" && node.tag == "title" {
 			title = cleanInline(htmlNodeText(node))
 		}
 	})
 	var output strings.Builder
-	renderHTMLBlocks(&output, root, base)
+	renderHTMLBlocks(&output, root, base, includeHeader)
 	markdown := cleanMarkdown(output.String())
 	if title == "" {
 		for _, line := range strings.Split(markdown, "\n") {
@@ -398,8 +442,8 @@ func htmlToMarkdown(root *htmlNode, base *url.URL) (string, string) {
 	return title, markdown
 }
 
-func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL) {
-	if skippedHTMLTag(node.tag) {
+func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL, includeHeader bool) {
+	if htmlNodeHidden(node) || skippedHTMLTag(node.tag) && !(includeHeader && node.tag == "header") {
 		return
 	}
 	switch node.tag {
@@ -411,15 +455,13 @@ func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL) {
 		writeMarkdownBlock(output, renderHTMLInline(node, base, nil))
 		return
 	case "pre":
-		language := ""
+		language := htmlCodeLanguage(node)
 		if child := firstHTMLChild(node, "code"); child != nil {
-			for _, class := range strings.Fields(child.attrs["class"]) {
-				if strings.HasPrefix(class, "language-") {
-					language = strings.TrimPrefix(class, "language-")
-				}
+			if language == "" {
+				language = htmlCodeLanguage(child)
 			}
 		}
-		code := strings.Trim(strings.ReplaceAll(htmlNodeText(node), "\r\n", "\n"), "\n")
+		code := strings.Trim(strings.ReplaceAll(htmlCodeText(node), "\r\n", "\n"), "\n")
 		writeMarkdownBlock(output, "```"+language+"\n"+code+"\n```")
 		return
 	case "ul", "ol":
@@ -428,12 +470,28 @@ func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL) {
 	case "table":
 		writeMarkdownBlock(output, renderHTMLTable(node, base))
 		return
-	case "a", "code":
+	case "a":
+		if htmlHasBlockChild(node) {
+			target := resolveHTMLReference(node.attrs["href"], base)
+			for _, child := range node.children {
+				if len(child.tag) == 2 && child.tag[0] == 'h' && child.tag[1] >= '1' && child.tag[1] <= '6' && target != "" {
+					level := int(child.tag[1] - '0')
+					label := renderHTMLInline(child, base, nil)
+					writeMarkdownBlock(output, strings.Repeat("#", level)+" ["+label+"]("+target+")")
+					continue
+				}
+				renderHTMLBlocks(output, child, base, includeHeader)
+			}
+			return
+		}
+		writeMarkdownBlock(output, renderHTMLInline(node, base, nil))
+		return
+	case "code":
 		writeMarkdownBlock(output, renderHTMLInline(node, base, nil))
 		return
 	}
 	for _, child := range node.children {
-		renderHTMLBlocks(output, child, base)
+		renderHTMLBlocks(output, child, base, includeHeader)
 	}
 }
 
@@ -441,7 +499,7 @@ func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool
 	var output strings.Builder
 	var render func(*htmlNode)
 	render = func(current *htmlNode) {
-		if excluded[current] || skippedHTMLTag(current.tag) {
+		if excluded[current] || htmlNodeHidden(current) || skippedHTMLTag(current.tag) {
 			return
 		}
 		if current.tag == "" {
@@ -472,12 +530,22 @@ func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool
 			output.WriteByte('*')
 			return
 		case "a":
+			if hasHTMLClass(current, "hash-link") {
+				return
+			}
 			label := cleanInline(htmlNodeText(current))
 			target := resolveHTMLReference(current.attrs["href"], base)
 			if label != "" && target != "" {
 				fmt.Fprintf(&output, "[%s](%s)", label, target)
 				return
 			}
+		case "img":
+			label := cleanInline(current.attrs["alt"])
+			target := resolveHTMLReference(current.attrs["src"], base)
+			if label != "" && target != "" {
+				fmt.Fprintf(&output, "![%s](%s)", label, target)
+			}
+			return
 		}
 		for _, child := range current.children {
 			render(child)
@@ -509,7 +577,9 @@ func renderHTMLList(node *htmlNode, base *url.URL, depth int) string {
 		}
 		output.WriteString(strings.Repeat("  ", depth) + marker + renderHTMLInline(item, base, excluded) + "\n")
 		for _, child := range nested {
-			output.WriteString(renderHTMLList(child, base, depth+1))
+			if rendered := renderHTMLList(child, base, depth+1); rendered != "" {
+				output.WriteString(rendered + "\n")
+			}
 		}
 	}
 	return strings.TrimRight(output.String(), "\n")
@@ -613,6 +683,44 @@ func firstHTMLChild(node *htmlNode, tag string) *htmlNode {
 	return nil
 }
 
+func htmlNodeHidden(node *htmlNode) bool {
+	_, hidden := node.attrs["hidden"]
+	return hidden
+}
+
+func htmlHasBlockChild(node *htmlNode) bool {
+	for _, child := range node.children {
+		switch child.tag {
+		case "h1", "h2", "h3", "h4", "h5", "h6", "p", "pre", "ul", "ol", "table", "article", "section", "div":
+			return true
+		}
+	}
+	return false
+}
+
+func htmlCodeLanguage(node *htmlNode) string {
+	for _, class := range strings.Fields(node.attrs["class"]) {
+		if strings.HasPrefix(class, "language-") {
+			return strings.TrimPrefix(class, "language-")
+		}
+	}
+	return ""
+}
+
+func htmlCodeText(node *htmlNode) string {
+	if node.tag == "" {
+		return node.text
+	}
+	if node.tag == "br" {
+		return "\n"
+	}
+	var output strings.Builder
+	for _, child := range node.children {
+		output.WriteString(htmlCodeText(child))
+	}
+	return output.String()
+}
+
 func skippedHTMLTag(tag string) bool {
 	switch tag {
 	case "script", "style", "noscript", "svg", "canvas", "template", "nav", "header", "footer", "aside", "form":
@@ -622,27 +730,53 @@ func skippedHTMLTag(tag string) bool {
 	}
 }
 
-func htmlPageLinks(root *htmlNode, base *url.URL) []string {
+func htmlPageLinks(roots []*htmlNode, base *url.URL, scope, scopePath string) []string {
 	unique := make(map[string]bool)
-	walkHTML(root, func(node *htmlNode) {
-		if node.tag != "a" {
-			return
-		}
-		linked, err := base.Parse(strings.TrimSpace(node.attrs["href"]))
-		if err != nil || linked.Host == "" || linked.Scheme != "http" && linked.Scheme != "https" || !sameOrigin(base, linked) {
-			return
-		}
-		linked.Fragment = ""
-		if likelyHTMLPath(linked.Path) {
-			unique[linked.String()] = true
-		}
-	})
+	for _, root := range roots {
+		walkHTML(root, func(node *htmlNode) {
+			if node.tag != "a" {
+				return
+			}
+			linked, err := base.Parse(strings.TrimSpace(node.attrs["href"]))
+			if err != nil || linked.Host == "" || linked.Scheme != "http" && linked.Scheme != "https" || !sameOrigin(base, linked) || scope == "path" && !withinDocumentationPath(linked.Path, scopePath) {
+				return
+			}
+			linked.Fragment = ""
+			if likelyHTMLPath(linked.Path) {
+				unique[linked.String()] = true
+			}
+		})
+	}
 	links := make([]string, 0, len(unique))
 	for linked := range unique {
 		links = append(links, linked)
 	}
 	sort.Strings(links)
 	return links
+}
+
+func documentationPathScope(value string) string {
+	directory := strings.HasSuffix(value, "/")
+	value = path.Clean("/" + strings.TrimPrefix(value, "/"))
+	if value == "/" {
+		return "/"
+	}
+	if directory {
+		return value + "/"
+	}
+	if path.Ext(value) != "" {
+		return strings.TrimSuffix(path.Dir(value), "/") + "/"
+	}
+	segments := strings.Split(strings.Trim(value, "/"), "/")
+	if len(segments) == 1 {
+		return "/" + segments[0] + "/"
+	}
+	return "/" + strings.Join(segments[:len(segments)-1], "/") + "/"
+}
+
+func withinDocumentationPath(value, scope string) bool {
+	cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
+	return scope == "/" || cleaned == strings.TrimSuffix(scope, "/") || strings.HasPrefix(cleaned+"/", scope)
 }
 
 func likelyHTMLPath(value string) bool {
