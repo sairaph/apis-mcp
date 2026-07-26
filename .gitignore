@@ -1,0 +1,5 @@
+.env
+apis-mcp
+dist/
+coverage.out
+*.test

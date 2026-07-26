@@ -1,0 +1,131 @@
+# apis-mcp
+
+`apis-mcp` is a local API documentation library, HTTP workspace, CLI, and MCP
+server in one Go binary. It gives AI clients searchable API references and a
+general HTTP caller without requiring a hosted service.
+
+## Features
+
+- Seven direct MCP tools: `apis_collections`, `apis_list`, `apis_pages`,
+  `apis_search`, `apis_read`, `apis_call`, and `apis_sessions`.
+- Canonical Markdown documentation with YAML frontmatter.
+- OpenAPI 3.x, Swagger 2.x, `llms.txt`, and Markdown-directory imports.
+- SQLite FTS search rebuilt entirely from canonical Markdown.
+- Persistent HTTP response cache and UUIDv7 cookie sessions.
+- Retries, redirects, compressed responses, JSONPath previews, and background
+  downloads.
+- Full-screen terminal app and human-oriented one-shot CLI commands.
+- Idempotent configuration for 13 MCP clients.
+- One CGO-free binary for Linux, macOS, and Windows on amd64 and arm64.
+
+## Install
+
+Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sairaph/apis-mcp/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/sairaph/apis-mcp/main/install.ps1 | iex
+```
+
+Run `apis-mcp configure` again whenever you want to register newly installed AI
+clients. Run `apis-mcp` in a terminal to open the full-screen application.
+
+## Documentation Library
+
+Built-in documentation is embedded in the binary. User document sets live in
+`~/.apis-mcp/library` and use this structure:
+
+```text
+my-api/
+  v1/
+    _index.md
+    overview.md
+    resources/
+      create.md
+```
+
+`_index.md` contains API metadata:
+
+```markdown
+---
+name: My API
+version: v1
+description: API description.
+collections: [examples]
+source_root: https://docs.example.com/
+---
+```
+
+Each page requires a title:
+
+```markdown
+---
+title: Create a resource
+api_endpoints: [/resources]
+http_methods: [POST]
+operation_ids: [createResource]
+---
+
+# Create a resource
+```
+
+Import existing sources:
+
+```sh
+apis-mcp import markdown ./canonical-docs
+apis-mcp import openapi "Pet API" v1 ./openapi.yaml
+apis-mcp import llms "Example API" 2026 https://docs.example.com/llms.txt
+apis-mcp import html "Example API" 2026 https://docs.example.com/api/
+apis-mcp rebuild
+```
+
+## CLI
+
+```text
+apis-mcp collections
+apis-mcp list --name stripe
+apis-mcp pages DOC_ID --path payments
+apis-mcp search DOC_ID "create payment"
+apis-mcp read DOC_ID PAGE_ID --lines 20:80
+apis-mcp call GET https://api.example.com/items
+apis-mcp sessions list
+apis-mcp cache cleanup
+apis-mcp doctor
+apis-mcp configure
+```
+
+Run `apis-mcp help` for the complete command reference.
+
+## Local Trust Model
+
+This is a local tool acting with the authority of the user who runs it. HTTP
+calls may access arbitrary HTTP/HTTPS destinations and header or payload inputs
+may reference local JSON files. The user is responsible for the endpoints,
+files, credentials, request effects, and downloaded content selected through
+the CLI or their MCP client.
+
+TLS verification remains enabled by default. Response-size, disk-reserve,
+redirect, retry, timeout, and private-file protections prevent accidental local
+resource exhaustion and cache corruption.
+
+## Build
+
+Go 1.26 or newer is required.
+
+```sh
+go test ./...
+go vet ./...
+CGO_ENABLED=0 go build -trimpath -o apis-mcp .
+```
+
+The full agent-facing behavior is specified in
+[`docs/tool-contract.md`](docs/tool-contract.md).
+
+## License
+
+MIT
