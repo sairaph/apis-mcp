@@ -1438,6 +1438,102 @@ func TestImportHTMLExhaustsVitePressSitemap(t *testing.T) {
 	}
 }
 
+func TestImportHTMLExhaustsScopedNextraSitemap(t *testing.T) {
+	for _, profile := range []string{"v4", "classic"} {
+		t.Run(profile, func(t *testing.T) {
+			outsideRequests := 0
+			page := func(title, body string) string {
+				content := `<a id="nextra-skip-nav"></a><aside class="nextra-sidebar"><a href="/docs/start/">Start</a><a href="/docs/second/">Second</a><a href="/about">About</a></aside><main data-pagefind-body="true"><h1>` + title + `</h1>` + body + `</main>`
+				if profile == "classic" {
+					content = `<nav class="nextra-sidebar-container"><a href="/docs/start/">Start</a><a href="/docs/second/">Second</a><a href="/about">About</a></nav><article class="nextra-content"><main><h1>` + title + `</h1>` + body + `</main></article>`
+				}
+				return `<!doctype html><html><head><meta name="generator" content="Next.js"><script src="/_next/static/chunks/app.js"></script></head><body><header>Nextra chrome</header>` + content + `<aside class="nextra-toc">TOC chrome</aside></body></html>`
+			}
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/docs/start/":
+					fmt.Fprint(writer, page("Nextra Start", `<p>Scoped docs content.</p><div class="language-ts"><pre><code>const docs = true</code></pre></div>`))
+				case "/docs/second/":
+					fmt.Fprint(writer, page("Nextra Second", `<p>Second docs page.</p>`))
+				case "/about":
+					outsideRequests++
+					http.Error(writer, "outside docs scope", http.StatusInternalServerError)
+				case "/sitemap.xml":
+					fmt.Fprintf(writer, `<urlset><url><loc>%s/about</loc></url><url><loc>%s/docs/start/</loc></url><url><loc>%s/docs/second/</loc></url></urlset>`, server.URL, server.URL, server.URL)
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			root := t.TempDir()
+			options := importer.Options{
+				LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+				HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+			}
+			detection, err := importer.DetectURL(context.Background(), server.URL+"/docs/start/", options)
+			if err != nil || detection.Framework != "nextra" {
+				t.Fatalf("Nextra detection: %+v, %v", detection, err)
+			}
+			result, err := importer.ImportHTML(context.Background(), "Nextra Fixture", "v1-"+profile, server.URL+"/docs/start/", options)
+			if err != nil || result.Framework != "nextra" || result.Pages != 2 || result.Truncated || outsideRequests != 0 {
+				t.Fatalf("Nextra import: %+v, outside=%d, %v", result, outsideRequests, err)
+			}
+			var generated string
+			for _, name := range relativeFiles(t, result.Destination) {
+				if filepath.Ext(name) == ".md" && name != "_index.md" {
+					raw, readErr := os.ReadFile(filepath.Join(result.Destination, name))
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					generated += string(raw)
+				}
+			}
+			for _, wanted := range []string{"# Nextra Start", "Scoped docs content.", "```ts\nconst docs = true\n```", "# Nextra Second"} {
+				if !strings.Contains(generated, wanted) {
+					t.Errorf("generated Nextra Markdown missing %q:\n%s", wanted, generated)
+				}
+			}
+			for _, excluded := range []string{"Nextra chrome", "TOC chrome"} {
+				if strings.Contains(generated, excluded) {
+					t.Errorf("generated Nextra Markdown contains chrome %q", excluded)
+				}
+			}
+		})
+	}
+}
+
+func TestImportHTMLRejectsNextraPageWithoutStaticContent(t *testing.T) {
+	page := func(content string) string {
+		return `<!doctype html><html><head><script src="/_next/static/chunks/app.js"></script></head><body><a id="nextra-skip-nav"></a><aside class="nextra-sidebar"><a href="/docs/start">Start</a><a href="/docs/empty">Empty</a></aside><main data-pagefind-body="true">` + content + `</main></body></html>`
+	}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/start":
+			fmt.Fprint(writer, page("<h1>Start</h1>"))
+		case "/docs/empty":
+			fmt.Fprint(writer, page(""))
+		case "/sitemap.xml":
+			fmt.Fprintf(writer, `<urlset><url><loc>%s/docs/start</loc></url><url><loc>%s/docs/empty</loc></url></urlset>`, server.URL, server.URL)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	options := importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	}
+	_, err := importer.ImportHTML(context.Background(), "Nextra Empty", "v1", server.URL+"/docs/start", options)
+	if err == nil || !strings.Contains(err.Error(), "page has no statically rendered content") {
+		t.Fatalf("expected empty Nextra page rejection, got %v", err)
+	}
+}
+
 func TestDetectAndImportHTMLRejectPlainText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain")

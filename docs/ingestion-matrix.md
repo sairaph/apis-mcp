@@ -26,7 +26,7 @@ Status values are `planned`, `active`, and `complete`.
 | MkDocs | https://www.mkdocs.org/getting-started/ | https://python-markdown.github.io/ | Static HTML / sitemap | complete |
 | Sphinx | https://www.sphinx-doc.org/en/master/ | https://requests.readthedocs.io/en/latest/ | Static HTML / search index | complete |
 | VitePress | https://vitepress.dev/guide/getting-started | https://vite.dev/guide/ | Static HTML / sitemap | complete |
-| Nextra | https://nextra.site/docs | https://swr.vercel.app/docs/getting-started | Static HTML | planned |
+| Nextra | https://nextra.site/docs | https://authjs.dev/getting-started | Static HTML / sitemap | complete |
 | Astro Starlight | https://starlight.astro.build/getting-started/ | https://docs.astro.build/en/getting-started/ | Static HTML | planned |
 | Docsify | https://docsify.js.org/#/quickstart | https://docsify-this.net/ | Source Markdown | planned |
 | mdBook | https://rust-lang.github.io/mdBook/ | https://doc.rust-lang.org/book/ | Static HTML / TOC | planned |
@@ -191,6 +191,33 @@ deployment base from `vp-icons.css`, accounts for clean and `index` aliases,
 and requires every route to expose useful statically rendered content. Vue was
 replaced as the test deployment because two sitemap routes are client-only SSR
 shells; those now fail closed instead of becoming title-only placeholders.
+
+### Nextra
+
+Verified on 2026-07-27 against independent Nextra 4 and classic Nextra 3
+deployments. SWR was replaced after it migrated from Nextra to Fumadocs.
+
+| Check | Nextra development site | Auth.js test site |
+| --- | --- | --- |
+| Framework generation | Nextra 4 | Nextra 3 |
+| Job ID | `019fa397-c780-7984-a2f9-7cfab5c064d7` | `019fa397-c780-7aab-a984-52bc013b585e` |
+| Framework detection | `nextra` | `nextra` |
+| Scoped sitemap entries fetched | 59 | 135 |
+| Canonical Markdown pages | 59 | 135 |
+| Theme content isolated | Pass | Pass |
+| Fenced code languages retained | Pass | Pass |
+| SQLite pages for document | 59 | 135 |
+| FTS acceptance query | `markdown` | `authentication` |
+| Detached terminal state | `succeeded` | `succeeded` |
+| Unlimited crawl completed naturally | Pass | Pass |
+| Truncated | No | No |
+
+Nextra completeness is bounded by the non-empty sitemap at the detected Next.js
+deployment root, filtered to the documentation section derived from the current
+page and its Nextra sidebar. Every route in that scoped inventory must be
+fetched, generated, and indexed. Sidebar links outside the current documentation
+section do not widen the inventory, and an absent sitemap, ambiguous deployment
+root, empty section, or non-static content container fails closed.
 
 ### OpenAPI 3 JSON/YAML
 

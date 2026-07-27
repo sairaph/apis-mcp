@@ -245,13 +245,33 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				siteRoot, inventoryErr = mkdocsSiteRoot(view, pageURL)
 				if inventoryErr == nil {
 					scopePath = siteRoot
-					inventory, inventoryErr = htmlSitemapInventory(ctx, "MkDocs", pageURL, siteRoot, reader)
+					inventory, inventoryErr = htmlSitemapInventory(ctx, "MkDocs", pageURL, siteRoot, siteRoot, reader)
 				}
 			case rootFramework == "vitepress":
 				siteRoot, inventoryErr = vitepressSiteRoot(document, pageURL)
 				if inventoryErr == nil {
 					scopePath = siteRoot
-					inventory, inventoryErr = htmlSitemapInventory(ctx, "VitePress", pageURL, siteRoot, reader)
+					inventory, inventoryErr = htmlSitemapInventory(ctx, "VitePress", pageURL, siteRoot, siteRoot, reader)
+				}
+				if inventoryErr == nil {
+					canonicalStart, canonicalErr := mkdocsInventoryURL(provenance)
+					if canonicalErr == nil && !containsString(inventory, canonicalStart) {
+						alias, aliasErr := vitepressStartInventoryAlias(pageURL, siteRoot, inventory)
+						if aliasErr == nil {
+							inventoryAliases[canonicalStart] = alias
+							inventoryIdentity = alias
+						}
+					}
+				}
+			case rootFramework == "nextra":
+				var deploymentRoot string
+				deploymentRoot, inventoryErr = nextraDeploymentRoot(document, pageURL)
+				if inventoryErr == nil {
+					siteRoot, inventoryErr = nextraDocumentationRoot(view, pageURL)
+				}
+				if inventoryErr == nil {
+					scopePath = siteRoot
+					inventory, inventoryErr = htmlSitemapInventory(ctx, "Nextra", pageURL, deploymentRoot, siteRoot, reader)
 				}
 				if inventoryErr == nil {
 					canonicalStart, canonicalErr := mkdocsInventoryURL(provenance)
@@ -307,8 +327,8 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			}
 		}
 		title, markdown := htmlToMarkdown(view.content, pageURL, view.includeHeader)
-		if rootFramework == "vitepress" && strings.TrimSpace(markdown) == "" {
-			return Result{}, fmt.Errorf("vitepress crawl did not complete: page has no statically rendered content: %s", provenance)
+		if (rootFramework == "vitepress" || rootFramework == "nextra") && strings.TrimSpace(markdown) == "" {
+			return Result{}, fmt.Errorf("%s crawl did not complete: page has no statically rendered content: %s", rootFramework, provenance)
 		}
 		if title == "" {
 			title = pageTitleFromURL(pageURL)
@@ -656,6 +676,17 @@ func inspectHTMLDocument(root *htmlNode) htmlDocumentView {
 			view.profileError = errors.New("VitePress page has no supported default-theme content container")
 		}
 		view.linkRoots = nil
+	case "nextra":
+		if content := firstHTMLAttribute(root, "data-pagefind-body", "true"); content != nil {
+			view.content = content
+			view.linkRoots = htmlClasses(root, "nextra-sidebar")
+		} else if article := firstHTMLClass(root, "nextra-content"); article != nil {
+			view.content = firstHTMLChild(article, "main")
+			view.linkRoots = htmlClasses(root, "nextra-sidebar-container")
+		}
+		if view.content == nil {
+			view.profileError = errors.New("Nextra page has no supported docs-theme content container")
+		}
 	}
 	return view
 }
@@ -695,6 +726,9 @@ func detectHTMLFramework(root *htmlNode) string {
 	if framework == "" && looksLikeSphinx(root) {
 		framework = "sphinx"
 	}
+	if framework == "" && looksLikeNextra(root) {
+		framework = "nextra"
+	}
 	if framework == "" && looksLikeMkDocsBuiltIn(root) {
 		framework = "mkdocs"
 	}
@@ -727,6 +761,33 @@ func looksLikeSphinx(root *htmlNode) bool {
 		return false
 	}
 	return htmlAssetSuffix(root, "script", "src", "_static/documentation_options.js") && htmlAssetSuffix(root, "script", "src", "_static/doctools.js")
+}
+
+func looksLikeNextra(root *htmlNode) bool {
+	if !htmlAssetPathContains(root, "/_next/static/") {
+		return false
+	}
+	if firstHTMLAttribute(root, "data-pagefind-body", "true") != nil && firstHTMLAttribute(root, "id", "nextra-skip-nav") != nil && len(htmlClasses(root, "nextra-sidebar")) > 0 {
+		return true
+	}
+	article := firstHTMLClass(root, "nextra-content")
+	return article != nil && firstHTMLChild(article, "main") != nil && len(htmlClasses(root, "nextra-sidebar-container")) > 0
+}
+
+func htmlAssetPathContains(root *htmlNode, marker string) bool {
+	found := false
+	walkHTML(root, func(node *htmlNode) {
+		if found || node.tag != "script" && node.tag != "link" {
+			return
+		}
+		value := node.attrs["src"]
+		if value == "" {
+			value = node.attrs["href"]
+		}
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		found = err == nil && strings.Contains(parsed.Path, marker)
+	})
+	return found
 }
 
 func htmlAssetSuffix(root *htmlNode, tag, attribute, suffix string) bool {
@@ -846,7 +907,7 @@ func normalizeDocumentationRoot(value string) string {
 	return strings.TrimSuffix(cleaned, "/") + "/"
 }
 
-func htmlSitemapInventory(ctx context.Context, framework string, pageURL *url.URL, siteRoot string, reader *sourceReader) ([]string, error) {
+func htmlSitemapInventory(ctx context.Context, framework string, pageURL *url.URL, siteRoot, documentationRoot string, reader *sourceReader) ([]string, error) {
 	sitemap := *pageURL
 	sitemap.Path = path.Join(siteRoot, "sitemap.xml")
 	sitemap.RawPath = ""
@@ -884,7 +945,12 @@ func htmlSitemapInventory(ctx context.Context, framework string, pageURL *url.UR
 			return nil, fmt.Errorf("%s sitemap %s repeats URL %s", framework, provenance, canonical)
 		}
 		seen[canonical] = true
-		urls = append(urls, canonical)
+		if withinDocumentationPath(linked.Path, documentationRoot) {
+			urls = append(urls, canonical)
+		}
+	}
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("%s sitemap %s contains no URLs under %s", framework, provenance, documentationRoot)
 	}
 	sort.Strings(urls)
 	return urls, nil
@@ -915,6 +981,58 @@ func vitepressSiteRoot(document *htmlNode, pageURL *url.URL) (string, error) {
 		return root, nil
 	}
 	panic("unreachable")
+}
+
+func nextraDeploymentRoot(document *htmlNode, pageURL *url.URL) (string, error) {
+	roots := make(map[string]bool)
+	walkHTML(document, func(node *htmlNode) {
+		if node.tag != "script" && node.tag != "link" {
+			return
+		}
+		value := node.attrs["src"]
+		if value == "" {
+			value = node.attrs["href"]
+		}
+		linked, err := pageURL.Parse(strings.TrimSpace(value))
+		if err != nil || !sameOrigin(pageURL, linked) {
+			return
+		}
+		index := strings.Index(linked.Path, "/_next/static/")
+		if index >= 0 {
+			roots[normalizeDocumentationRoot(linked.Path[:index+1])] = true
+		}
+	})
+	if len(roots) != 1 {
+		return "", errors.New("Nextra page has no unique same-origin _next/static deployment root")
+	}
+	for root := range roots {
+		return root, nil
+	}
+	panic("unreachable")
+}
+
+func nextraDocumentationRoot(view htmlDocumentView, pageURL *url.URL) (string, error) {
+	candidateRoot := documentationPathScope(strings.TrimSuffix(pageURL.Path, "/"))
+	paths := []string{pageURL.Path}
+	for _, navigation := range view.linkRoots {
+		walkHTML(navigation, func(node *htmlNode) {
+			if node.tag != "a" {
+				return
+			}
+			linked, err := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+			if err == nil && sameOrigin(pageURL, linked) && linked.RawQuery == "" && likelyHTMLPath(linked.Path) && withinDocumentationPath(linked.Path, candidateRoot) {
+				paths = append(paths, linked.Path)
+			}
+		})
+	}
+	if len(paths) < 2 {
+		return "", errors.New("Nextra sidebar has no same-origin documentation routes")
+	}
+	root := commonDocumentationRoot(paths)
+	if root == "" || root == "/" || !withinDocumentationPath(pageURL.Path, root) {
+		return "", errors.New("Nextra sidebar does not define a scoped documentation root")
+	}
+	return root, nil
 }
 
 func hasHTMLToken(value, wanted string) bool {
@@ -1211,7 +1329,7 @@ func isMkDocsFramework(framework string) bool {
 }
 
 func isFiniteInventoryFramework(framework string) bool {
-	return isMkDocsFramework(framework) || framework == "sphinx" || framework == "vitepress"
+	return isMkDocsFramework(framework) || framework == "sphinx" || framework == "vitepress" || framework == "nextra"
 }
 
 func containsString(values []string, wanted string) bool {
