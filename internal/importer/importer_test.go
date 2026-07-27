@@ -1175,6 +1175,196 @@ Docs Build Date UTC : 2026-07-27 00:00:00 -->`, framework: "mkdocs"},
 	}
 }
 
+func TestImportHTMLExhaustsSphinxSearchIndex(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		root       string
+		startPath  string
+		aliasPath  string
+		builder    string
+		fileSuffix string
+		guidePath  string
+		orphanPath string
+		theme      string
+	}{
+		{name: "html builder", root: "/docs/", startPath: "/docs/", aliasPath: "/docs/index.xhtml", builder: "html", fileSuffix: ".xhtml", guidePath: "/docs/guide.xhtml", orphanPath: "/docs/orphan.xhtml", theme: "basic"},
+		{name: "dirhtml builder", root: "/manual/", startPath: "/manual/index.html", aliasPath: "/manual/", builder: "dirhtml", fileSuffix: ".html", guidePath: "/manual/guide/", orphanPath: "/manual/orphan/", theme: "readthedocs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			orphanRequests := 0
+			indexAliasRequests := 0
+			page := func(title, body, contentRoot string) string {
+				content := `<div class="body" role="main"><h1>` + title + `<a class="headerlink" href="#title">¶</a></h1>` + body + `</div>`
+				navigation := `<div class="sphinxsidebar"><a href="guide">Guide</a><span>Sidebar chrome</span></div>`
+				if test.theme == "readthedocs" {
+					content = `<div class="rst-content"><div class="document" role="main"><h1>` + title + `<a class="headerlink" href="#title">¶</a></h1>` + body + `</div></div>`
+					navigation = `<div class="wy-menu-vertical"><a href="guide">Guide</a><span>RTD chrome</span></div>`
+				}
+				return `<!doctype html><html data-content_root="` + contentRoot + `"><head><script src="` + test.root + `_static/documentation_options.js?v=1"></script><script src="` + test.root + `_static/doctools.js?v=1"></script></head><body>` + navigation + content + `</body></html>`
+			}
+
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path == test.startPath {
+					fmt.Fprint(writer, page("Sphinx Home", `<p>Root content.</p>`, "./"))
+					return
+				}
+				switch request.URL.Path {
+				case test.guidePath:
+					fmt.Fprint(writer, page("Sphinx Guide", `<div class="highlight-python"><pre><code>print("sphinx")</code></pre></div>`, "../"))
+				case test.orphanPath:
+					orphanRequests++
+					fmt.Fprint(writer, page("Indexed Orphan", `<dl><dt><code>request()</code></dt><dd><p>Orphan API description.</p></dd><dt class="sig">request(*args,<br> **kwargs)<a class="viewcode-link" href="source.html">[source]</a><a class="headerlink" href="#request">¶</a></dt><dd><p>Signature description.</p></dd></dl><aside class="footnote-list"><aside class="footnote" role="doc-footnote"><span class="label">[1]</span><p>Footnote definition.</p></aside></aside>`, "../"))
+				case test.aliasPath:
+					indexAliasRequests++
+					http.Error(writer, "duplicate index fetch", http.StatusInternalServerError)
+				case test.root + "_static/documentation_options.js":
+					fmt.Fprintf(writer, `const DOCUMENTATION_OPTIONS = {BUILDER: '%s', FILE_SUFFIX: '%s', LINK_SUFFIX: ''};`, test.builder, test.fileSuffix)
+				case test.root + "_static/doctools.js":
+					fmt.Fprint(writer, `const sphinx = true;`)
+				case test.root + "searchindex.js":
+					fmt.Fprint(writer, `Search.setIndex({"docnames":["orphan","index","guide"],"titles":["Orphan","Home","Guide"]});`)
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			root := t.TempDir()
+			index := filepath.Join(t.TempDir(), "index.sqlite")
+			options := importer.Options{
+				LibraryRoot: root, Rebuild: rebuildFunc(root, index), HTTPClient: server.Client(),
+				HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+			}
+			source := server.URL + test.startPath + "?utm_source=fixture"
+			detection, err := importer.DetectURL(context.Background(), source, options)
+			if err != nil || detection.Framework != "sphinx" {
+				t.Fatalf("Sphinx detection: %+v, %v", detection, err)
+			}
+			result, err := importer.ImportHTML(context.Background(), "Sphinx Fixture", "v1-"+strings.ReplaceAll(test.name, " ", "-"), source, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Framework != "sphinx" || result.Pages != 3 || result.Truncated || orphanRequests != 1 || indexAliasRequests != 0 {
+				t.Fatalf("Sphinx import: %+v, orphan=%d, index_alias=%d", result, orphanRequests, indexAliasRequests)
+			}
+			var generated string
+			for _, name := range relativeFiles(t, result.Destination) {
+				if filepath.Ext(name) != ".md" || name == "_index.md" {
+					continue
+				}
+				raw, readErr := os.ReadFile(filepath.Join(result.Destination, name))
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				generated += string(raw)
+			}
+			for _, wanted := range []string{"# Sphinx Home", "# Sphinx Guide", "# Indexed Orphan", "```python\nprint(\"sphinx\")\n```", "**`request()`**", "`request(*args, **kwargs)`", "Orphan API description.", "**[1]**", "Footnote definition."} {
+				if !strings.Contains(generated, wanted) {
+					t.Errorf("generated Sphinx Markdown missing %q:\n%s", wanted, generated)
+				}
+			}
+			for _, excluded := range []string{"Sidebar chrome", "RTD chrome", "¶"} {
+				if strings.Contains(generated, excluded) {
+					t.Errorf("generated Sphinx Markdown contains chrome %q", excluded)
+				}
+			}
+		})
+	}
+}
+
+func TestImportHTMLRejectsInvalidSphinxSearchIndex(t *testing.T) {
+	for index, payload := range []string{
+		`Search.setIndex({"docnames":[],"titles":[]});`,
+		`Search.setIndex({objects:{},filenames:["index"]});`,
+		`Search.setIndex({"docnames":["index","../escape"],"titles":["Home","Escape"]});`,
+		`Search.setIndex({"docnames":["index","guide","guide/index"],"titles":["Home","Guide","Guide Index"]});`,
+	} {
+		t.Run(fmt.Sprintf("case-%d", index), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/docs/":
+					fmt.Fprint(writer, `<!doctype html><html data-content_root="./"><head><script src="_static/documentation_options.js"></script><script src="_static/doctools.js"></script></head><body><main role="main"><h1>Docs</h1></main></body></html>`)
+				case "/docs/_static/documentation_options.js":
+					fmt.Fprint(writer, `const DOCUMENTATION_OPTIONS = {BUILDER: 'dirhtml', FILE_SUFFIX: '.html', LINK_SUFFIX: '.html'};`)
+				case "/docs/searchindex.js":
+					fmt.Fprint(writer, payload)
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			_, err := importer.ImportHTML(context.Background(), "Invalid Sphinx", "v1", server.URL+"/docs/", importer.Options{
+				LibraryRoot: t.TempDir(), Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+				HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+			})
+			if err == nil || !strings.Contains(err.Error(), "sphinx crawl did not complete") {
+				t.Fatalf("expected Sphinx inventory rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestImportHTMLFollowsInitialSphinxRefresh(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/start.html":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta http-equiv="refresh" content="0;url=/docs/"></head></html>`)
+		case "/docs/":
+			fmt.Fprint(writer, `<!doctype html><html data-content_root="./"><head><script src="_static/documentation_options.js"></script><script src="_static/doctools.js"></script></head><body><main role="main"><h1>Redirected Sphinx</h1></main></body></html>`)
+		case "/docs/_static/documentation_options.js":
+			fmt.Fprint(writer, `const DOCUMENTATION_OPTIONS = {BUILDER: 'html', FILE_SUFFIX: '.html', LINK_SUFFIX: '.html'};`)
+		case "/docs/_static/doctools.js":
+			fmt.Fprint(writer, `const sphinx = true;`)
+		case "/docs/searchindex.js":
+			fmt.Fprint(writer, `Search.setIndex({"docnames":["index"],"titles":["Redirected Sphinx"]});`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	result, err := importer.ImportHTML(context.Background(), "Redirected Sphinx", "v1", server.URL+"/docs/start.html", importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	})
+	if err != nil || result.Framework != "sphinx" || result.Pages != 1 || result.Truncated {
+		t.Fatalf("initial Sphinx refresh: %+v, %v", result, err)
+	}
+}
+
+func TestImportHTMLMapsSphinxLinkSuffixAlias(t *testing.T) {
+	nativeRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/guide":
+			fmt.Fprint(writer, `<!doctype html><html data-content_root="./"><head><script src="_static/documentation_options.js"></script><script src="_static/doctools.js"></script></head><body><main role="main"><h1>Extensionless Guide</h1></main></body></html>`)
+		case "/docs/guide.html":
+			nativeRequests++
+			http.Error(writer, "duplicate native fetch", http.StatusInternalServerError)
+		case "/docs/_static/documentation_options.js":
+			fmt.Fprint(writer, `const DOCUMENTATION_OPTIONS = {BUILDER: 'html', FILE_SUFFIX: '.html', LINK_SUFFIX: ''};`)
+		case "/docs/_static/doctools.js":
+			fmt.Fprint(writer, `const sphinx = true;`)
+		case "/docs/searchindex.js":
+			fmt.Fprint(writer, `Search.setIndex({"docnames":["guide"],"titles":["Extensionless Guide"]});`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	result, err := importer.ImportHTML(context.Background(), "Extensionless Sphinx", "v1", server.URL+"/docs/guide?source=test", importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	})
+	if err != nil || result.Pages != 1 || result.Truncated || nativeRequests != 0 {
+		t.Fatalf("Sphinx link suffix alias: %+v, native=%d, %v", result, nativeRequests, err)
+	}
+}
+
 func TestDetectAndImportHTMLRejectPlainText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain")

@@ -3,6 +3,7 @@ package importer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -35,6 +36,9 @@ var (
 	mkdocsBaseURL           = regexp.MustCompile(`\bbase_url\s*=\s*["']([^"']*)["']`)
 	mkdocsVersionComment    = regexp.MustCompile(`(?im)^\s*MkDocs\s+version\s*:\s*[0-9]+(?:\.[0-9]+)+(?:[A-Za-z0-9.+-]*)?\s*$`)
 	mkdocsBuildComment      = regexp.MustCompile(`(?im)^\s*Docs Build Date UTC\s*:`)
+	sphinxBuilderOption     = regexp.MustCompile(`(?m)\bBUILDER\s*:\s*['"]([^'"]+)['"]`)
+	sphinxFileSuffixOption  = regexp.MustCompile(`(?m)\bFILE_SUFFIX\s*:\s*['"]([^'"]*)['"]`)
+	sphinxLinkSuffixOption  = regexp.MustCompile(`(?m)\bLINK_SUFFIX\s*:\s*['"]([^'"]*)['"]`)
 )
 
 type htmlNode struct {
@@ -59,6 +63,12 @@ type htmlDocumentView struct {
 	linkRoots     []*htmlNode
 	includeHeader bool
 	profileError  error
+}
+
+type sphinxRuntime struct {
+	builder    string
+	fileSuffix string
+	linkSuffix string
 }
 
 // ImportHTML crawls a bounded set of static, same-origin HTML pages and
@@ -147,6 +157,7 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		if parseErr != nil || !sameOrigin(start, pageURL) {
 			continue
 		}
+		inventoryIdentity, _ := mkdocsInventoryURL(provenance)
 		if finiteInventory != nil {
 			canonicalPending, canonicalErr := canonicalHTTPURL(pending.source)
 			if canonicalErr == nil && finiteInventory[canonicalPending] {
@@ -169,7 +180,20 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		}
 		if redirected != nil {
 			canonicalRedirect, canonicalErr := canonicalHTTPURL(redirected.String())
-			if finiteInventory == nil || canonicalErr != nil || !finiteInventory[canonicalRedirect] {
+			if finiteInventory == nil {
+				if canonicalErr != nil || len(pages) != 0 || pending.depth >= 10 || !withinDocumentationPath(redirected.Path, scopePath) {
+					return Result{}, fmt.Errorf("HTML crawl did not complete: invalid initial refresh on %s", provenance)
+				}
+				canonicalAlias, aliasErr := canonicalHTTPURL(provenance)
+				if aliasErr != nil || canonicalAlias == canonicalRedirect || processed[canonicalRedirect] {
+					return Result{}, fmt.Errorf("HTML crawl did not complete: refresh cycle on %s", provenance)
+				}
+				processed[provenance] = true
+				seen[canonicalRedirect] = true
+				queue = append([]pendingPage{{source: canonicalRedirect, depth: pending.depth + 1}}, queue...)
+				continue
+			}
+			if canonicalErr != nil || !finiteInventory[canonicalRedirect] {
 				return Result{}, fmt.Errorf("%s crawl did not complete: page %s redirects outside its finite inventory", rootFramework, provenance)
 			}
 			canonicalAlias, canonicalErr := canonicalHTTPURL(provenance)
@@ -211,14 +235,34 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		}
 		seen[provenance] = true
 		processed[provenance] = true
-		if len(pages) == 0 && isMkDocsFramework(rootFramework) {
-			siteRoot, inventoryErr := mkdocsSiteRoot(view, pageURL)
-			if inventoryErr == nil {
-				scopePath = siteRoot
-			}
+		if len(pages) == 0 && isFiniteInventoryFramework(rootFramework) {
+			var siteRoot string
 			var inventory []string
-			if inventoryErr == nil {
-				inventory, inventoryErr = mkdocsSitemapInventory(ctx, pageURL, siteRoot, reader)
+			var inventoryErr error
+			switch {
+			case isMkDocsFramework(rootFramework):
+				siteRoot, inventoryErr = mkdocsSiteRoot(view, pageURL)
+				if inventoryErr == nil {
+					scopePath = siteRoot
+					inventory, inventoryErr = mkdocsSitemapInventory(ctx, pageURL, siteRoot, reader)
+				}
+			case rootFramework == "sphinx":
+				var runtime sphinxRuntime
+				siteRoot, runtime, inventoryErr = sphinxSite(ctx, document, pageURL, reader)
+				if inventoryErr == nil {
+					scopePath = siteRoot
+					inventory, inventoryErr = sphinxSearchInventory(ctx, pageURL, siteRoot, runtime, reader)
+				}
+				if inventoryErr == nil {
+					canonicalStart, canonicalErr := mkdocsInventoryURL(provenance)
+					if canonicalErr == nil && !containsString(inventory, canonicalStart) {
+						alias, aliasErr := sphinxStartInventoryAlias(pageURL, siteRoot, runtime)
+						if aliasErr == nil && containsString(inventory, alias) {
+							inventoryAliases[canonicalStart] = alias
+							inventoryIdentity = alias
+						}
+					}
+				}
 			}
 			if inventoryErr != nil {
 				return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, inventoryErr)
@@ -227,7 +271,8 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			for _, linked := range inventory {
 				finiteInventory[linked] = true
 			}
-			canonicalProvenance, canonicalErr := mkdocsInventoryURL(provenance)
+			canonicalProvenance := inventoryIdentity
+			_, canonicalErr := canonicalHTTPURL(canonicalProvenance)
 			if canonicalErr != nil || !containsString(inventory, canonicalProvenance) {
 				return Result{}, fmt.Errorf("%s crawl did not complete: finite inventory does not contain starting page %s", rootFramework, provenance)
 			}
@@ -256,15 +301,14 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			source: provenance, markdown: markdown,
 		})
 		if finiteInventory != nil {
-			canonicalGenerated, canonicalErr := mkdocsInventoryURL(provenance)
-			if canonicalErr == nil {
-				generatedInventory[canonicalGenerated] = true
+			if inventoryIdentity != "" {
+				generatedInventory[inventoryIdentity] = true
 			}
 		}
 		reportProgress(options, Progress{Stage: "page", Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)})
 
 		var linkedPages []string
-		if !isMkDocsFramework(rootFramework) {
+		if finiteInventory == nil {
 			linkedPages = htmlPageLinks(view.linkRoots, pageURL, options.HTMLScope, scopePath)
 		}
 		if options.MaxHTMLDepth >= 0 && pending.depth >= options.MaxHTMLDepth {
@@ -557,6 +601,19 @@ func inspectHTMLDocument(root *htmlNode) htmlDocumentView {
 		} else {
 			view.linkRoots = htmlClasses(root, "wy-menu-vertical")
 		}
+	case "sphinx":
+		view.content = firstHTMLAttribute(root, "role", "main")
+		if view.content == nil {
+			view.content = firstHTMLTag(root, "main")
+		}
+		if view.content == nil {
+			view.content = firstHTMLClass(root, "body")
+		}
+		if view.content == nil {
+			view.profileError = errors.New("Sphinx page has no main content container")
+			return view
+		}
+		view.linkRoots = append(htmlClasses(root, "sphinxsidebar"), htmlClasses(root, "wy-menu-vertical")...)
 	}
 	return view
 }
@@ -590,6 +647,9 @@ func detectHTMLFramework(root *htmlNode) string {
 			framework = "docusaurus"
 		}
 	})
+	if framework == "" && looksLikeSphinx(root) {
+		framework = "sphinx"
+	}
 	if framework == "" && looksLikeMkDocsBuiltIn(root) {
 		framework = "mkdocs"
 	}
@@ -615,6 +675,13 @@ func looksLikeMkDocsBuiltIn(root *htmlNode) bool {
 		foundRuntime = strings.Contains(script, "mkdocs_page_name") || mkdocsBaseURL.MatchString(script)
 	})
 	return foundRuntime
+}
+
+func looksLikeSphinx(root *htmlNode) bool {
+	if firstHTMLAttribute(root, "role", "main") == nil && firstHTMLTag(root, "main") == nil && firstHTMLClass(root, "body") == nil {
+		return false
+	}
+	return htmlAssetSuffix(root, "script", "src", "_static/documentation_options.js") && htmlAssetSuffix(root, "script", "src", "_static/doctools.js")
 }
 
 func htmlAssetSuffix(root *htmlNode, tag, attribute, suffix string) bool {
@@ -787,8 +854,247 @@ func mkdocsInventoryURL(value string) (string, error) {
 	return canonicalHTTPURL(parsed.String())
 }
 
+func sphinxSite(ctx context.Context, document *htmlNode, pageURL *url.URL, reader *sourceReader) (string, sphinxRuntime, error) {
+	assetURL := htmlAssetURL(document, pageURL, "script", "src", "_static/documentation_options.js")
+	if assetURL == nil || !sameOrigin(pageURL, assetURL) {
+		return "", sphinxRuntime{}, errors.New("Sphinx page has no same-origin documentation_options.js")
+	}
+	const optionsPath = "_static/documentation_options.js"
+	if !strings.HasSuffix(assetURL.Path, optionsPath) {
+		return "", sphinxRuntime{}, errors.New("Sphinx documentation options path is invalid")
+	}
+	siteRoot := normalizeDocumentationRoot(strings.TrimSuffix(assetURL.Path, optionsPath))
+
+	var advertisedRoot string
+	walkHTML(document, func(node *htmlNode) {
+		if advertisedRoot != "" {
+			return
+		}
+		candidate := ""
+		if node.tag == "html" {
+			candidate = strings.TrimSpace(node.attrs["data-content_root"])
+		}
+		if node.tag == "script" && candidate == "" {
+			candidate = strings.TrimSpace(node.attrs["data-url_root"])
+		}
+		if candidate == "" {
+			return
+		}
+		resolved, err := pageURL.Parse(candidate)
+		if err == nil && sameOrigin(pageURL, resolved) && resolved.RawQuery == "" && resolved.Fragment == "" {
+			advertisedRoot = normalizeDocumentationRoot(resolved.Path)
+		}
+	})
+	if advertisedRoot != "" && advertisedRoot != siteRoot {
+		return "", sphinxRuntime{}, fmt.Errorf("Sphinx content root %s conflicts with asset root %s", advertisedRoot, siteRoot)
+	}
+
+	raw, provenance, err := reader.read(ctx, assetURL.String(), nil)
+	if err != nil {
+		return "", sphinxRuntime{}, fmt.Errorf("fetch Sphinx documentation options %s: %w", assetURL, err)
+	}
+	resolved, err := url.Parse(provenance)
+	if err != nil || !sameOrigin(pageURL, resolved) || resolved.Path != assetURL.Path {
+		return "", sphinxRuntime{}, errors.New("Sphinx documentation options redirected outside its expected URL")
+	}
+	runtime, err := parseSphinxRuntime(raw)
+	if err != nil {
+		return "", sphinxRuntime{}, err
+	}
+	return siteRoot, runtime, nil
+}
+
+func parseSphinxRuntime(raw []byte) (sphinxRuntime, error) {
+	value := string(raw)
+	builder := sphinxBuilderOption.FindStringSubmatch(value)
+	if len(builder) != 2 || builder[1] != "html" && builder[1] != "dirhtml" {
+		return sphinxRuntime{}, errors.New("Sphinx documentation options use an unsupported builder")
+	}
+	fileSuffix := sphinxFileSuffixOption.FindStringSubmatch(value)
+	if len(fileSuffix) != 2 || invalidSphinxSuffix(fileSuffix[1]) {
+		return sphinxRuntime{}, errors.New("Sphinx documentation options have an invalid file suffix")
+	}
+	linkSuffix := sphinxLinkSuffixOption.FindStringSubmatch(value)
+	if len(linkSuffix) != 2 {
+		linkSuffix = fileSuffix
+	}
+	if linkSuffix[1] != "/" && invalidSphinxSuffix(linkSuffix[1]) {
+		return sphinxRuntime{}, errors.New("Sphinx documentation options have an invalid link suffix")
+	}
+	return sphinxRuntime{builder: builder[1], fileSuffix: fileSuffix[1], linkSuffix: linkSuffix[1]}, nil
+}
+
+func invalidSphinxSuffix(value string) bool {
+	return strings.ContainsAny(value, `/\\?#`) || strings.IndexFunc(value, unicode.IsControl) >= 0
+}
+
+func sphinxSearchInventory(ctx context.Context, pageURL *url.URL, siteRoot string, runtime sphinxRuntime, reader *sourceReader) ([]string, error) {
+	indexURL := *pageURL
+	indexURL.Path = path.Join(siteRoot, "searchindex.js")
+	indexURL.RawPath = ""
+	indexURL.RawQuery = ""
+	indexURL.Fragment = ""
+	raw, provenance, err := reader.read(ctx, indexURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Sphinx search index %s: %w", indexURL.String(), err)
+	}
+	resolved, err := url.Parse(provenance)
+	if err != nil || !sameOrigin(pageURL, resolved) || resolved.Path != indexURL.Path {
+		return nil, errors.New("Sphinx search index redirected outside its expected URL")
+	}
+	docnames, err := parseSphinxSearchIndex(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(docnames) > maxHTMLSitemapURLs {
+		return nil, fmt.Errorf("Sphinx search index exceeds %d documents", maxHTMLSitemapURLs)
+	}
+	rootURL := *pageURL
+	rootURL.Path = siteRoot
+	rootURL.RawPath = ""
+	rootURL.RawQuery = ""
+	rootURL.Fragment = ""
+	seen := make(map[string]bool, len(docnames))
+	urls := make([]string, 0, len(docnames))
+	for index, docname := range docnames {
+		linked, buildErr := sphinxDocumentURL(&rootURL, docname, runtime)
+		if buildErr != nil {
+			return nil, fmt.Errorf("Sphinx search index has invalid docname at position %d: %w", index, buildErr)
+		}
+		canonical, canonicalErr := canonicalHTTPURL(linked)
+		linkedURL, parseErr := url.Parse(linked)
+		if canonicalErr != nil || parseErr != nil || !sameOrigin(&rootURL, linkedURL) || !withinDocumentationPath(linkedURL.Path, siteRoot) {
+			return nil, fmt.Errorf("Sphinx search index has invalid URL at position %d", index)
+		}
+		if seen[canonical] {
+			return nil, fmt.Errorf("Sphinx search index repeats generated URL %s", canonical)
+		}
+		seen[canonical] = true
+		urls = append(urls, canonical)
+	}
+	sort.Strings(urls)
+	return urls, nil
+}
+
+func parseSphinxSearchIndex(raw []byte) ([]string, error) {
+	value := strings.TrimSpace(string(raw))
+	const prefix = "Search.setIndex("
+	if !strings.HasPrefix(value, prefix) {
+		return nil, errors.New("Sphinx search index uses an unsupported legacy format")
+	}
+	value = strings.TrimSpace(strings.TrimPrefix(value, prefix))
+	if strings.HasSuffix(value, ");") {
+		value = strings.TrimSpace(strings.TrimSuffix(value, ");"))
+	} else if strings.HasSuffix(value, ")") {
+		value = strings.TrimSpace(strings.TrimSuffix(value, ")"))
+	} else {
+		return nil, errors.New("Sphinx search index has an invalid wrapper")
+	}
+	var index struct {
+		DocNames []string `json:"docnames"`
+		Titles   []string `json:"titles"`
+	}
+	if err := json.Unmarshal([]byte(value), &index); err != nil {
+		return nil, fmt.Errorf("parse Sphinx search index: %w", err)
+	}
+	if len(index.DocNames) == 0 {
+		return nil, errors.New("Sphinx search index contains no docnames")
+	}
+	if len(index.Titles) != 0 && len(index.Titles) != len(index.DocNames) {
+		return nil, errors.New("Sphinx search index title count does not match docnames")
+	}
+	return index.DocNames, nil
+}
+
+func sphinxDocumentURL(rootURL *url.URL, docname string, runtime sphinxRuntime) (string, error) {
+	if docname == "" || strings.HasPrefix(docname, "/") || strings.Contains(docname, "\\") || strings.IndexFunc(docname, unicode.IsControl) >= 0 {
+		return "", errors.New("unsafe document name")
+	}
+	for _, segment := range strings.Split(docname, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", errors.New("unsafe document path segment")
+		}
+	}
+	linked := *rootURL
+	switch runtime.builder {
+	case "html":
+		linked.Path = path.Join(rootURL.Path, docname+runtime.fileSuffix)
+	case "dirhtml":
+		directory := ""
+		if docname != "index" {
+			directory = strings.TrimSuffix(docname, "/index")
+		}
+		linked.Path = normalizeDocumentationRoot(path.Join(rootURL.Path, directory))
+	default:
+		return "", errors.New("unsupported Sphinx builder")
+	}
+	linked.RawPath = ""
+	return linked.String(), nil
+}
+
+func sphinxStartInventoryAlias(pageURL *url.URL, siteRoot string, runtime sphinxRuntime) (string, error) {
+	aliased := *pageURL
+	aliased.RawPath = ""
+	aliased.RawQuery = ""
+	aliased.Fragment = ""
+	switch runtime.builder {
+	case "html":
+		if runtime.linkSuffix == "/" && aliased.Path != siteRoot {
+			if !strings.HasSuffix(aliased.Path, "/") || !strings.HasPrefix(aliased.Path, siteRoot) {
+				return "", errors.New("Sphinx HTML start URL does not use the configured link suffix")
+			}
+			relative := strings.TrimSuffix(strings.TrimPrefix(aliased.Path, siteRoot), "/")
+			aliased.Path = path.Join(siteRoot, relative+runtime.fileSuffix)
+		} else if strings.HasSuffix(aliased.Path, "/") {
+			aliased.Path = path.Join(aliased.Path, "index"+runtime.fileSuffix)
+		} else {
+			if !strings.HasPrefix(aliased.Path, siteRoot) {
+				return "", errors.New("Sphinx HTML start URL is outside the documentation root")
+			}
+			relative := strings.TrimPrefix(aliased.Path, siteRoot)
+			if runtime.linkSuffix != "" && !strings.HasSuffix(relative, runtime.linkSuffix) {
+				return "", errors.New("Sphinx HTML start URL does not use the configured link suffix")
+			}
+			relative = strings.TrimSuffix(relative, runtime.linkSuffix)
+			aliased.Path = path.Join(siteRoot, relative+runtime.fileSuffix)
+		}
+	case "dirhtml":
+		indexName := "index" + runtime.fileSuffix
+		if path.Base(aliased.Path) != indexName {
+			return "", errors.New("Sphinx dirhtml start URL is not an index alias")
+		}
+		aliased.Path = normalizeDocumentationRoot(path.Dir(aliased.Path))
+	default:
+		return "", errors.New("unsupported Sphinx builder")
+	}
+	if !withinDocumentationPath(aliased.Path, siteRoot) {
+		return "", errors.New("Sphinx start alias is outside the documentation root")
+	}
+	return canonicalHTTPURL(aliased.String())
+}
+
+func htmlAssetURL(root *htmlNode, base *url.URL, tag, attribute, suffix string) *url.URL {
+	var found *url.URL
+	walkHTML(root, func(node *htmlNode) {
+		if found != nil || node.tag != tag {
+			return
+		}
+		linked, err := base.Parse(strings.TrimSpace(node.attrs[attribute]))
+		if err == nil && strings.HasSuffix(linked.Path, suffix) {
+			linked.RawQuery = ""
+			linked.Fragment = ""
+			found = linked
+		}
+	})
+	return found
+}
+
 func isMkDocsFramework(framework string) bool {
 	return framework == "mkdocs" || framework == "mkdocs-material"
+}
+
+func isFiniteInventoryFramework(framework string) bool {
+	return isMkDocsFramework(framework) || framework == "sphinx"
 }
 
 func containsString(values []string, wanted string) bool {
@@ -819,6 +1125,16 @@ func firstHTMLClass(root *htmlNode, class string) *htmlNode {
 	var found *htmlNode
 	walkHTML(root, func(node *htmlNode) {
 		if found == nil && hasHTMLClass(node, class) {
+			found = node
+		}
+	})
+	return found
+}
+
+func firstHTMLTag(root *htmlNode, tag string) *htmlNode {
+	var found *htmlNode
+	walkHTML(root, func(node *htmlNode) {
+		if found == nil && node.tag == tag {
 			found = node
 		}
 	})
@@ -895,7 +1211,8 @@ func htmlToMarkdown(root *htmlNode, base *url.URL, includeHeader bool) (string, 
 }
 
 func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL, includeHeader bool) {
-	if htmlNodeHidden(node) || skippedHTMLTag(node.tag) && !(includeHeader && node.tag == "header") {
+	semanticAside := node.tag == "aside" && (hasHTMLClass(node, "footnote") || hasHTMLClass(node, "footnote-list") || strings.EqualFold(node.attrs["role"], "doc-footnote"))
+	if htmlNodeHidden(node) || skippedHTMLTag(node.tag) && !(includeHeader && node.tag == "header") && !semanticAside {
 		return
 	}
 	switch node.tag {
@@ -941,10 +1258,74 @@ func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL, in
 	case "code":
 		writeMarkdownBlock(output, renderHTMLInline(node, base, nil))
 		return
+	case "dt":
+		if hasHTMLClass(node, "sig") {
+			writeMarkdownBlock(output, markdownCodeSpan(sphinxSignatureText(node)))
+			return
+		}
+		writeMarkdownBlock(output, "**"+renderHTMLInline(node, base, nil)+"**")
+		return
+	case "aside":
+		if semanticAside {
+			label := firstHTMLClass(node, "label")
+			if label != nil {
+				writeMarkdownBlock(output, "**"+cleanInline(htmlNodeText(label))+"**")
+			}
+			for _, child := range node.children {
+				if child != label {
+					renderHTMLBlocks(output, child, base, includeHeader)
+				}
+			}
+			return
+		}
 	}
 	for _, child := range node.children {
 		renderHTMLBlocks(output, child, base, includeHeader)
 	}
+}
+
+func sphinxSignatureText(node *htmlNode) string {
+	var output strings.Builder
+	var render func(*htmlNode)
+	render = func(current *htmlNode) {
+		if current.tag == "a" && (hasHTMLClass(current, "headerlink") || hasHTMLClass(current, "viewcode-link") || cleanInline(htmlNodeText(current)) == "[source]") {
+			return
+		}
+		if current.tag == "" {
+			output.WriteString(current.text)
+			return
+		}
+		if current.tag == "br" {
+			output.WriteByte(' ')
+			return
+		}
+		for _, child := range current.children {
+			render(child)
+		}
+	}
+	render(node)
+	return cleanInline(output.String())
+}
+
+func markdownCodeSpan(value string) string {
+	longest := 0
+	for index := 0; index < len(value); {
+		if value[index] != '`' {
+			index++
+			continue
+		}
+		end := index
+		for end < len(value) && value[end] == '`' {
+			end++
+		}
+		longest = max(longest, end-index)
+		index = end
+	}
+	fence := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(value, "`") || strings.HasSuffix(value, "`") || strings.HasPrefix(value, " ") || strings.HasSuffix(value, " ") {
+		value = " " + value + " "
+	}
+	return fence + value + fence
 }
 
 func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool) string {
@@ -1164,6 +1545,12 @@ func htmlCodeLanguage(node *htmlNode) string {
 		for _, class := range strings.Fields(current.attrs["class"]) {
 			if strings.HasPrefix(class, "language-") {
 				return strings.TrimPrefix(class, "language-")
+			}
+			if strings.HasPrefix(class, "highlight-") {
+				language := strings.TrimPrefix(class, "highlight-")
+				if language != "" && language != "default" && language != "none" {
+					return language
+				}
 			}
 		}
 	}

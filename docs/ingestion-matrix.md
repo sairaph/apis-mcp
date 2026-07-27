@@ -24,7 +24,7 @@ Status values are `planned`, `active`, and `complete`.
 | Docusaurus | https://docusaurus.io/docs | https://jestjs.io/docs/getting-started | Static HTML | complete |
 | MkDocs Material | https://squidfunk.github.io/mkdocs-material/getting-started/ | https://docs.astral.sh/ruff/ | Static HTML / sitemap | complete |
 | MkDocs | https://www.mkdocs.org/getting-started/ | https://python-markdown.github.io/ | Static HTML / sitemap | complete |
-| Sphinx | https://www.sphinx-doc.org/en/master/ | https://docs.python.org/3/ | Static HTML / source | planned |
+| Sphinx | https://www.sphinx-doc.org/en/master/ | https://requests.readthedocs.io/en/latest/ | Static HTML / search index | complete |
 | VitePress | https://vitepress.dev/guide/getting-started | https://vuejs.org/guide/introduction.html | Static HTML | planned |
 | Nextra | https://nextra.site/docs | https://swr.vercel.app/docs/getting-started | Static HTML | planned |
 | Astro Starlight | https://starlight.astro.build/getting-started/ | https://docs.astro.build/en/getting-started/ | Static HTML | planned |
@@ -136,6 +136,35 @@ Plain MkDocs uses a non-empty same-origin sitemap as its authoritative
 inventory. An absent or empty sitemap fails closed because primary navigation
 can omit generated pages. Every inventory entry must be fetched successfully,
 and framework detection must remain consistent across all pages.
+
+### Sphinx
+
+Verified on 2026-07-27 against independent `html` and `dirhtml` deployments:
+
+| Check | Sphinx development site | Requests test site |
+| --- | --- | --- |
+| Builder | `html` | `dirhtml` |
+| Job ID | `019fa1f3-3a48-7e7c-8e6e-9a36b4d45b7b` | `019fa1f3-3a78-79e1-acf1-c8058da2dd48` |
+| Framework detection | `sphinx` | `sphinx` |
+| Search-index documents fetched | 155 | 15 |
+| Canonical Markdown pages | 155 | 15 |
+| Theme content isolated | Pass | Pass |
+| API definition signatures retained | Pass | Pass |
+| Heading permalinks excluded | Pass | Pass |
+| Pygments code languages retained | Pass | Pass |
+| SQLite pages for document | 155 | 15 |
+| FTS acceptance query | `autodoc` | `authentication` |
+| Detached terminal state | `succeeded` | `succeeded` |
+| Unlimited crawl completed naturally | Pass | Pass |
+| Truncated | No | No |
+
+Sphinx completeness is bounded by the finite `docnames` inventory generated in
+`searchindex.js`: every titled source document advertised there must be
+fetched, generated, and indexed. Builder-native `FILE_SUFFIX` URLs are used for
+fetches while `LINK_SUFFIX`, root, query, and `index` aliases are accounted for
+without duplicate pages. Generated utility pages, extension-created pages, and
+titleless source documents are outside this inventory boundary. Missing,
+legacy, malformed, empty, repeated, or colliding indexes fail closed.
 
 ### OpenAPI 3 JSON/YAML
 
