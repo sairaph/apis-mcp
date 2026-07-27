@@ -25,7 +25,7 @@ Status values are `planned`, `active`, and `complete`.
 | MkDocs Material | https://squidfunk.github.io/mkdocs-material/getting-started/ | https://docs.astral.sh/ruff/ | Static HTML / sitemap | complete |
 | MkDocs | https://www.mkdocs.org/getting-started/ | https://python-markdown.github.io/ | Static HTML / sitemap | complete |
 | Sphinx | https://www.sphinx-doc.org/en/master/ | https://requests.readthedocs.io/en/latest/ | Static HTML / search index | complete |
-| VitePress | https://vitepress.dev/guide/getting-started | https://vuejs.org/guide/introduction.html | Static HTML | planned |
+| VitePress | https://vitepress.dev/guide/getting-started | https://vite.dev/guide/ | Static HTML / sitemap | complete |
 | Nextra | https://nextra.site/docs | https://swr.vercel.app/docs/getting-started | Static HTML | planned |
 | Astro Starlight | https://starlight.astro.build/getting-started/ | https://docs.astro.build/en/getting-started/ | Static HTML | planned |
 | Docsify | https://docsify.js.org/#/quickstart | https://docsify-this.net/ | Source Markdown | planned |
@@ -165,6 +165,32 @@ fetches while `LINK_SUFFIX`, root, query, and `index` aliases are accounted for
 without duplicate pages. Generated utility pages, extension-created pages, and
 titleless source documents are outside this inventory boundary. Missing,
 legacy, malformed, empty, repeated, or colliding indexes fail closed.
+
+### VitePress
+
+Verified on 2026-07-27 against two independent VitePress 2 deployments:
+
+| Check | VitePress development site | Vite test site |
+| --- | --- | --- |
+| Job ID | `019fa32a-d41b-7a86-bd66-b6da344c064b` | `019fa345-331d-7793-84a6-59a93c1b0998` |
+| Framework detection | `vitepress` | `vitepress` |
+| Finite sitemap entries fetched | 272 | 57 |
+| Canonical Markdown pages | 272 | 57 |
+| Default/custom theme content isolated | Pass | Pass |
+| Heading permalinks excluded | Pass | Pass |
+| Shiki code languages retained | Pass | Pass |
+| SQLite pages for document | 272 | 57 |
+| FTS acceptance query | `sitemap` | `plugins` |
+| Detached terminal state | `succeeded` | `succeeded` |
+| Unlimited crawl completed naturally | Pass | Pass |
+| Truncated | No | No |
+
+VitePress completeness is bounded by the publisher-selected non-empty sitemap,
+including transformed, rewritten, and dynamic routes. The importer derives the
+deployment base from `vp-icons.css`, accounts for clean and `index` aliases,
+and requires every route to expose useful statically rendered content. Vue was
+replaced as the test deployment because two sitemap routes are client-only SSR
+shells; those now fail closed instead of becoming title-only placeholders.
 
 ### OpenAPI 3 JSON/YAML
 

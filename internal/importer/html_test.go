@@ -30,3 +30,24 @@ func TestHTMLRefreshRequiresImmediateNonEmptyTarget(t *testing.T) {
 		t.Fatalf("ordinary text detected as refresh: %v, %v", target, err)
 	}
 }
+
+func TestVitePressStartInventoryAliases(t *testing.T) {
+	for _, test := range []struct {
+		start     string
+		inventory string
+	}{
+		{start: "https://docs.test/guide/start.html?source=test", inventory: "https://docs.test/guide/start"},
+		{start: "https://docs.test/guide/index.html", inventory: "https://docs.test/guide/"},
+		{start: "https://docs.test/guide/index", inventory: "https://docs.test/guide/"},
+		{start: "https://docs.test/guide/", inventory: "https://docs.test/guide/index.html"},
+	} {
+		start, err := url.Parse(test.start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		alias, err := vitepressStartInventoryAlias(start, "/", []string{test.inventory})
+		if err != nil || alias != test.inventory {
+			t.Errorf("alias %s: %q, %v", test.start, alias, err)
+		}
+	}
+}

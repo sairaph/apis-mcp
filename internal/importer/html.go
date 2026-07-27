@@ -39,6 +39,7 @@ var (
 	sphinxBuilderOption     = regexp.MustCompile(`(?m)\bBUILDER\s*:\s*['"]([^'"]+)['"]`)
 	sphinxFileSuffixOption  = regexp.MustCompile(`(?m)\bFILE_SUFFIX\s*:\s*['"]([^'"]*)['"]`)
 	sphinxLinkSuffixOption  = regexp.MustCompile(`(?m)\bLINK_SUFFIX\s*:\s*['"]([^'"]*)['"]`)
+	vitepressGenerator      = regexp.MustCompile(`(?i)^vitepress v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9a-z.-]+)?(?:\+[0-9a-z.-]+)?$`)
 )
 
 type htmlNode struct {
@@ -244,7 +245,23 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				siteRoot, inventoryErr = mkdocsSiteRoot(view, pageURL)
 				if inventoryErr == nil {
 					scopePath = siteRoot
-					inventory, inventoryErr = mkdocsSitemapInventory(ctx, pageURL, siteRoot, reader)
+					inventory, inventoryErr = htmlSitemapInventory(ctx, "MkDocs", pageURL, siteRoot, reader)
+				}
+			case rootFramework == "vitepress":
+				siteRoot, inventoryErr = vitepressSiteRoot(document, pageURL)
+				if inventoryErr == nil {
+					scopePath = siteRoot
+					inventory, inventoryErr = htmlSitemapInventory(ctx, "VitePress", pageURL, siteRoot, reader)
+				}
+				if inventoryErr == nil {
+					canonicalStart, canonicalErr := mkdocsInventoryURL(provenance)
+					if canonicalErr == nil && !containsString(inventory, canonicalStart) {
+						alias, aliasErr := vitepressStartInventoryAlias(pageURL, siteRoot, inventory)
+						if aliasErr == nil {
+							inventoryAliases[canonicalStart] = alias
+							inventoryIdentity = alias
+						}
+					}
 				}
 			case rootFramework == "sphinx":
 				var runtime sphinxRuntime
@@ -290,6 +307,9 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			}
 		}
 		title, markdown := htmlToMarkdown(view.content, pageURL, view.includeHeader)
+		if rootFramework == "vitepress" && strings.TrimSpace(markdown) == "" {
+			return Result{}, fmt.Errorf("vitepress crawl did not complete: page has no statically rendered content: %s", provenance)
+		}
 		if title == "" {
 			title = pageTitleFromURL(pageURL)
 		}
@@ -614,6 +634,28 @@ func inspectHTMLDocument(root *htmlNode) htmlDocumentView {
 			return view
 		}
 		view.linkRoots = append(htmlClasses(root, "sphinxsidebar"), htmlClasses(root, "wy-menu-vertical")...)
+	case "vitepress":
+		if home := firstHTMLClass(root, "VPHome"); home != nil {
+			view.content = home
+		} else if doc := firstHTMLClass(root, "VPDoc"); doc != nil {
+			view.content = firstHTMLClass(doc, "vp-doc")
+		} else if doc := firstHTMLClass(root, "VPContentDoc"); doc != nil {
+			view.content = firstHTMLClass(doc, "vt-doc")
+		} else if page := firstHTMLClass(root, "VPContentPage"); page != nil {
+			view.content = firstHTMLTag(page, "main")
+		} else if page := firstHTMLClass(root, "marketing-layout"); page != nil {
+			if shell := lastHTMLChild(page, "div"); shell != nil {
+				view.content = firstHTMLChild(shell, "div")
+			}
+		} else if page := firstHTMLClass(root, "VPPage"); page != nil {
+			view.content = page
+		} else {
+			view.content = nil
+		}
+		if view.content == nil {
+			view.profileError = errors.New("VitePress page has no supported default-theme content container")
+		}
+		view.linkRoots = nil
 	}
 	return view
 }
@@ -633,6 +675,9 @@ func detectHTMLFramework(root *htmlNode) string {
 				return
 			case mkdocsGenerator.MatchString(generator):
 				framework = "mkdocs"
+				return
+			case vitepressGenerator.MatchString(generator):
+				framework = "vitepress"
 				return
 			case strings.HasPrefix(generator, "docusaurus"):
 				framework = "docusaurus"
@@ -801,7 +846,7 @@ func normalizeDocumentationRoot(value string) string {
 	return strings.TrimSuffix(cleaned, "/") + "/"
 }
 
-func mkdocsSitemapInventory(ctx context.Context, pageURL *url.URL, siteRoot string, reader *sourceReader) ([]string, error) {
+func htmlSitemapInventory(ctx context.Context, framework string, pageURL *url.URL, siteRoot string, reader *sourceReader) ([]string, error) {
 	sitemap := *pageURL
 	sitemap.Path = path.Join(siteRoot, "sitemap.xml")
 	sitemap.RawPath = ""
@@ -809,40 +854,112 @@ func mkdocsSitemapInventory(ctx context.Context, pageURL *url.URL, siteRoot stri
 	sitemap.Fragment = ""
 	raw, provenance, err := reader.read(ctx, sitemap.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("fetch MkDocs sitemap %s: %w", sitemap.String(), err)
+		return nil, fmt.Errorf("fetch %s sitemap %s: %w", framework, sitemap.String(), err)
 	}
 	var document struct {
 		Locations []string `xml:"url>loc"`
 	}
 	if err := xml.Unmarshal(raw, &document); err != nil {
-		return nil, fmt.Errorf("parse MkDocs sitemap %s: %w", provenance, err)
+		return nil, fmt.Errorf("parse %s sitemap %s: %w", framework, provenance, err)
 	}
 	if len(document.Locations) == 0 {
-		return nil, fmt.Errorf("MkDocs sitemap %s contains no URLs", provenance)
+		return nil, fmt.Errorf("%s sitemap %s contains no URLs", framework, provenance)
 	}
 	if len(document.Locations) > maxHTMLSitemapURLs {
-		return nil, fmt.Errorf("MkDocs sitemap %s exceeds %d URLs", provenance, maxHTMLSitemapURLs)
+		return nil, fmt.Errorf("%s sitemap %s exceeds %d URLs", framework, provenance, maxHTMLSitemapURLs)
 	}
 	seen := make(map[string]bool, len(document.Locations))
 	urls := make([]string, 0, len(document.Locations))
 	for index, location := range document.Locations {
 		linked, err := url.Parse(strings.TrimSpace(location))
 		if err != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || linked.RawQuery != "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
-			return nil, fmt.Errorf("MkDocs sitemap %s contains invalid URL at position %d", provenance, index)
+			return nil, fmt.Errorf("%s sitemap %s contains invalid URL at position %d", framework, provenance, index)
 		}
 		linked.Fragment = ""
 		canonical, err := canonicalHTTPURL(linked.String())
 		if err != nil {
-			return nil, fmt.Errorf("canonicalize MkDocs sitemap URL %q: %w", location, err)
+			return nil, fmt.Errorf("canonicalize %s sitemap URL %q: %w", framework, location, err)
 		}
 		if seen[canonical] {
-			return nil, fmt.Errorf("MkDocs sitemap %s repeats URL %s", provenance, canonical)
+			return nil, fmt.Errorf("%s sitemap %s repeats URL %s", framework, provenance, canonical)
 		}
 		seen[canonical] = true
 		urls = append(urls, canonical)
 	}
 	sort.Strings(urls)
 	return urls, nil
+}
+
+func vitepressSiteRoot(document *htmlNode, pageURL *url.URL) (string, error) {
+	roots := make(map[string]bool)
+	walkHTML(document, func(node *htmlNode) {
+		if node.tag != "link" || !hasHTMLToken(node.attrs["rel"], "stylesheet") {
+			return
+		}
+		linked, err := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+		if err != nil || !sameOrigin(pageURL, linked) || path.Base(linked.Path) != "vp-icons.css" || linked.RawQuery != "" {
+			return
+		}
+		root := normalizeDocumentationRoot(strings.TrimSuffix(linked.Path, "vp-icons.css"))
+		if withinDocumentationPath(pageURL.Path, root) {
+			roots[root] = true
+		}
+	})
+	if len(roots) == 0 {
+		return "", errors.New("VitePress page has no same-origin vp-icons.css site-root marker")
+	}
+	if len(roots) != 1 {
+		return "", errors.New("VitePress page has conflicting site-root markers")
+	}
+	for root := range roots {
+		return root, nil
+	}
+	panic("unreachable")
+}
+
+func hasHTMLToken(value, wanted string) bool {
+	for _, token := range strings.Fields(value) {
+		if strings.EqualFold(token, wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func vitepressStartInventoryAlias(pageURL *url.URL, siteRoot string, inventory []string) (string, error) {
+	base := *pageURL
+	base.RawPath = ""
+	base.RawQuery = ""
+	base.Fragment = ""
+	paths := make(map[string]bool)
+	add := func(value string) {
+		candidate := base
+		candidate.Path = value
+		canonical, err := canonicalHTTPURL(candidate.String())
+		if err == nil && withinDocumentationPath(candidate.Path, siteRoot) && containsString(inventory, canonical) {
+			paths[canonical] = true
+		}
+	}
+	if strings.HasSuffix(base.Path, "/index.html") {
+		add(strings.TrimSuffix(base.Path, "index.html"))
+	}
+	if strings.HasSuffix(base.Path, "/index") {
+		add(strings.TrimSuffix(base.Path, "index"))
+	}
+	if strings.HasSuffix(base.Path, "/") {
+		add(path.Join(base.Path, "index.html"))
+	} else if strings.HasSuffix(base.Path, ".html") {
+		add(strings.TrimSuffix(base.Path, ".html"))
+	} else {
+		add(base.Path + ".html")
+	}
+	if len(paths) != 1 {
+		return "", errors.New("VitePress starting page has no unique sitemap alias")
+	}
+	for candidate := range paths {
+		return candidate, nil
+	}
+	panic("unreachable")
 }
 
 func mkdocsInventoryURL(value string) (string, error) {
@@ -1094,7 +1211,7 @@ func isMkDocsFramework(framework string) bool {
 }
 
 func isFiniteInventoryFramework(framework string) bool {
-	return isMkDocsFramework(framework) || framework == "sphinx"
+	return isMkDocsFramework(framework) || framework == "sphinx" || framework == "vitepress"
 }
 
 func containsString(values []string, wanted string) bool {
@@ -1363,7 +1480,7 @@ func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool
 			output.WriteByte('*')
 			return
 		case "a":
-			if hasHTMLClass(current, "hash-link") || hasHTMLClass(current, "headerlink") {
+			if hasHTMLClass(current, "hash-link") || hasHTMLClass(current, "headerlink") || hasHTMLClass(current, "header-anchor") {
 				return
 			}
 			if hasHTMLClass(current, "toclink") {
@@ -1517,6 +1634,15 @@ func firstHTMLChild(node *htmlNode, tag string) *htmlNode {
 	for _, child := range node.children {
 		if child.tag == tag {
 			return child
+		}
+	}
+	return nil
+}
+
+func lastHTMLChild(node *htmlNode, tag string) *htmlNode {
+	for index := len(node.children) - 1; index >= 0; index-- {
+		if node.children[index].tag == tag {
+			return node.children[index]
 		}
 	}
 	return nil

@@ -1365,6 +1365,79 @@ func TestImportHTMLMapsSphinxLinkSuffixAlias(t *testing.T) {
 	}
 }
 
+func TestImportHTMLExhaustsVitePressSitemap(t *testing.T) {
+	cleanStartRequests := 0
+	page := func(layout, title, body string) string {
+		content := `<div class="VPDoc"><div class="vp-doc"><h1>` + title + `<a class="header-anchor" href="#title">​</a></h1>` + body + `</div></div>`
+		if layout == "home" {
+			content = `<div class="VPHome"><h1>` + title + `</h1>` + body + `</div>`
+		} else if layout == "page" {
+			content = `<div class="VPPage"><h1>` + title + `</h1>` + body + `</div>`
+		}
+		return `<!doctype html><html><head><meta name="generator" content="VitePress v2.0.0-alpha.18"><link rel="preload stylesheet" href="/project/docs/vp-icons.css"></head><body><header class="VPNav">Navigation chrome</header><aside class="VPSidebar">Sidebar chrome</aside>` + content + `<footer class="VPFooter">Footer chrome</footer></body></html>`
+	}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/project/docs/guide/start.html":
+			fmt.Fprint(writer, page("doc", "VitePress Start", `<p>Document content.</p><div class="language-go"><pre><code>fmt.Println("vitepress")</code></pre></div>`))
+		case "/project/docs/guide/start":
+			cleanStartRequests++
+			http.Error(writer, "duplicate clean alias", http.StatusInternalServerError)
+		case "/project/docs/second.html":
+			fmt.Fprint(writer, page("page", "VitePress Page", `<p>Page layout content.</p>`))
+		case "/project/docs/custom.html":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="VitePress v2.0.0-alpha.18"><link rel="stylesheet" href="/project/docs/vp-icons.css"></head><body><div class="VPContentDoc"><main><div class="vt-doc guide"><h1>Custom VitePress</h1><p>Scoped custom-theme content.</p></div></main></div></body></html>`)
+		case "/project/docs/custom-home.html":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="VitePress v2.0.0-alpha.18"><link rel="stylesheet" href="/project/docs/vp-icons.css"></head><body><div class="VPContentPage"><main><h1>Custom Home</h1><p>Scoped homepage content.</p></main><footer class="VPFooter">Custom footer chrome</footer></div></body></html>`)
+		case "/project/docs/marketing.html":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="VitePress v2.0.0-alpha.18"><link rel="stylesheet" href="/project/docs/vp-icons.css"></head><body><div class="marketing-layout"><header>Marketing nav</header><div><div><h1>Marketing Home</h1><p>Scoped marketing content.</p><footer>Marketing footer</footer></div></div></div></body></html>`)
+		case "/project/docs/":
+			fmt.Fprint(writer, page("home", "VitePress Home", `<p>Hero and feature content.</p>`))
+		case "/project/docs/sitemap.xml":
+			fmt.Fprintf(writer, `<urlset><url><loc>%s/project/docs/guide/start</loc></url><url><loc>%s/project/docs/second.html</loc></url><url><loc>%s/project/docs/custom.html</loc></url><url><loc>%s/project/docs/custom-home.html</loc></url><url><loc>%s/project/docs/marketing.html</loc></url><url><loc>%s/project/docs/</loc></url></urlset>`, server.URL, server.URL, server.URL, server.URL, server.URL, server.URL)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	options := importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	}
+	source := server.URL + "/project/docs/guide/start.html?source=fixture"
+	detection, err := importer.DetectURL(context.Background(), source, options)
+	if err != nil || detection.Framework != "vitepress" {
+		t.Fatalf("VitePress detection: %+v, %v", detection, err)
+	}
+	result, err := importer.ImportHTML(context.Background(), "VitePress Fixture", "v1", source, options)
+	if err != nil || result.Framework != "vitepress" || result.Pages != 6 || result.Truncated || cleanStartRequests != 0 {
+		t.Fatalf("VitePress import: %+v, clean_start=%d, %v", result, cleanStartRequests, err)
+	}
+	var generated string
+	for _, name := range relativeFiles(t, result.Destination) {
+		if filepath.Ext(name) == ".md" && name != "_index.md" {
+			raw, readErr := os.ReadFile(filepath.Join(result.Destination, name))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			generated += string(raw)
+		}
+	}
+	for _, wanted := range []string{"# VitePress Start", "```go\nfmt.Println(\"vitepress\")\n```", "# VitePress Page", "# VitePress Home", "Hero and feature content.", "# Custom VitePress", "Scoped custom-theme content.", "# Custom Home", "Scoped homepage content.", "# Marketing Home", "Scoped marketing content."} {
+		if !strings.Contains(generated, wanted) {
+			t.Errorf("generated VitePress Markdown missing %q:\n%s", wanted, generated)
+		}
+	}
+	for _, excluded := range []string{"Navigation chrome", "Sidebar chrome", "Footer chrome", "Custom footer chrome", "Marketing nav", "Marketing footer", "​"} {
+		if strings.Contains(generated, excluded) {
+			t.Errorf("generated VitePress Markdown contains chrome %q", excluded)
+		}
+	}
+}
+
 func TestDetectAndImportHTMLRejectPlainText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain")
