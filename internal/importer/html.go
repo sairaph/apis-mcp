@@ -30,7 +30,11 @@ const (
 var (
 	htmlMetaTag             = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
 	mkdocsMaterialGenerator = regexp.MustCompile(`(?:^|,\s*)mkdocs-material(?:-|$)`)
+	mkdocsGenerator         = regexp.MustCompile(`(?:^|,\s*)mkdocs(?:-[0-9]+(?:\.[0-9]+)*)?(?:\s*(?:,|$))`)
 	mkdocsScopeURL          = regexp.MustCompile(`__md_scope\s*=\s*new\s+URL\(\s*["']([^"']*)["']`)
+	mkdocsBaseURL           = regexp.MustCompile(`\bbase_url\s*=\s*["']([^"']*)["']`)
+	mkdocsVersionComment    = regexp.MustCompile(`(?im)^\s*MkDocs\s+version\s*:\s*[0-9]+(?:\.[0-9]+)+(?:[A-Za-z0-9.+-]*)?\s*$`)
+	mkdocsBuildComment      = regexp.MustCompile(`(?im)^\s*Docs Build Date UTC\s*:`)
 )
 
 type htmlNode struct {
@@ -150,7 +154,7 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			}
 			canonicalProvenance, canonicalErr := canonicalHTTPURL(provenance)
 			if canonicalErr != nil || !finiteInventory[canonicalProvenance] || !withinDocumentationPath(pageURL.Path, scopePath) {
-				return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: sitemap entry %s redirected outside its finite inventory", pending.source)
+				return Result{}, fmt.Errorf("%s crawl did not complete: inventory entry %s redirected outside its finite inventory", rootFramework, pending.source)
 			}
 			if canonicalErr == nil && canonicalPending != canonicalProvenance {
 				inventoryAliases[canonicalPending] = canonicalProvenance
@@ -207,26 +211,27 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		}
 		seen[provenance] = true
 		processed[provenance] = true
-		if len(pages) == 0 && rootFramework == "mkdocs-material" {
-			siteRoot, inventoryErr := mkdocsMaterialSiteRoot(view, pageURL)
+		if len(pages) == 0 && isMkDocsFramework(rootFramework) {
+			siteRoot, inventoryErr := mkdocsSiteRoot(view, pageURL)
 			if inventoryErr == nil {
 				scopePath = siteRoot
 			}
 			var inventory []string
 			if inventoryErr == nil {
-				inventory, inventoryErr = mkdocsMaterialInventory(ctx, pageURL, siteRoot, reader)
+				inventory, inventoryErr = mkdocsSitemapInventory(ctx, pageURL, siteRoot, reader)
 			}
 			if inventoryErr != nil {
-				return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: %w", inventoryErr)
+				return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, inventoryErr)
 			}
 			finiteInventory = make(map[string]bool, len(inventory))
 			for _, linked := range inventory {
 				finiteInventory[linked] = true
 			}
-			canonicalProvenance, canonicalErr := canonicalHTTPURL(provenance)
+			canonicalProvenance, canonicalErr := mkdocsInventoryURL(provenance)
 			if canonicalErr != nil || !containsString(inventory, canonicalProvenance) {
-				return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: sitemap does not contain starting page %s", provenance)
+				return Result{}, fmt.Errorf("%s crawl did not complete: finite inventory does not contain starting page %s", rootFramework, provenance)
 			}
+			seen[canonicalProvenance] = true
 			fetchedInventory[canonicalProvenance] = true
 			if options.MaxHTMLDepth == 0 {
 				crawlLimited = len(inventory) > 1
@@ -251,7 +256,7 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			source: provenance, markdown: markdown,
 		})
 		if finiteInventory != nil {
-			canonicalGenerated, canonicalErr := canonicalHTTPURL(provenance)
+			canonicalGenerated, canonicalErr := mkdocsInventoryURL(provenance)
 			if canonicalErr == nil {
 				generatedInventory[canonicalGenerated] = true
 			}
@@ -259,7 +264,7 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		reportProgress(options, Progress{Stage: "page", Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)})
 
 		var linkedPages []string
-		if rootFramework != "mkdocs-material" {
+		if !isMkDocsFramework(rootFramework) {
 			linkedPages = htmlPageLinks(view.linkRoots, pageURL, options.HTMLScope, scopePath)
 		}
 		if options.MaxHTMLDepth >= 0 && pending.depth >= options.MaxHTMLDepth {
@@ -283,11 +288,11 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, errors.Join(crawlErrors...))
 	}
 	if len(finiteInventory) > 0 && !crawlLimited && len(queue) == 0 && len(fetchedInventory) != len(finiteInventory) {
-		return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: sitemap advertised %d entries but %d were fetched", len(finiteInventory), len(fetchedInventory))
+		return Result{}, fmt.Errorf("%s crawl did not complete: finite inventory advertised %d entries but %d were fetched", rootFramework, len(finiteInventory), len(fetchedInventory))
 	}
 	if len(finiteInventory) > 0 && !crawlLimited && len(queue) == 0 {
 		if err := validateInventoryAliases(inventoryAliases, generatedInventory); err != nil {
-			return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: %w", err)
+			return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, err)
 		}
 	}
 	if len(pages) == 0 {
@@ -375,6 +380,8 @@ func parseHTML(raw []byte) (*htmlNode, error) {
 					continue
 				}
 				converted = &htmlNode{text: current.Data, parent: parent}
+			case xhtml.CommentNode:
+				converted = &htmlNode{tag: "#comment", text: current.Data, parent: parent}
 			default:
 				if err := convert(current.FirstChild, parent, depth); err != nil {
 					return err
@@ -538,12 +545,25 @@ func inspectHTMLDocument(root *htmlNode) htmlDocumentView {
 		if len(view.linkRoots) == 0 {
 			view.profileError = errors.New("MkDocs Material page has no primary navigation")
 		}
+	case "mkdocs":
+		content := firstHTMLAttribute(root, "role", "main")
+		if content == nil {
+			view.profileError = errors.New("MkDocs page has no main content container")
+			return view
+		}
+		view.content = content
+		if navigation := firstHTMLAttribute(root, "id", "navbar-collapse"); navigation != nil {
+			view.linkRoots = []*htmlNode{navigation}
+		} else {
+			view.linkRoots = htmlClasses(root, "wy-menu-vertical")
+		}
 	}
 	return view
 }
 
 func detectHTMLFramework(root *htmlNode) string {
 	framework := ""
+	hasMainContent := firstHTMLAttribute(root, "role", "main") != nil
 	walkHTML(root, func(node *htmlNode) {
 		if framework != "" {
 			return
@@ -554,40 +574,92 @@ func detectHTMLFramework(root *htmlNode) string {
 			case mkdocsMaterialGenerator.MatchString(generator):
 				framework = "mkdocs-material"
 				return
+			case mkdocsGenerator.MatchString(generator):
+				framework = "mkdocs"
+				return
 			case strings.HasPrefix(generator, "docusaurus"):
 				framework = "docusaurus"
 				return
 			}
 		}
+		if node.tag == "#comment" && hasMainContent && mkdocsVersionComment.MatchString(node.text) && mkdocsBuildComment.MatchString(node.text) {
+			framework = "mkdocs"
+			return
+		}
 		if node.attrs["id"] == "__docusaurus" || hasHTMLClass(node, "docs-doc-page") && hasHTMLClass(node, "plugin-docs") {
 			framework = "docusaurus"
 		}
 	})
+	if framework == "" && looksLikeMkDocsBuiltIn(root) {
+		framework = "mkdocs"
+	}
 	return framework
 }
 
-func mkdocsMaterialSiteRoot(view htmlDocumentView, pageURL *url.URL) (string, error) {
+func looksLikeMkDocsBuiltIn(root *htmlNode) bool {
+	if firstHTMLAttribute(root, "role", "main") == nil {
+		return false
+	}
+	if firstHTMLAttribute(root, "id", "navbar-collapse") != nil && htmlAssetSuffix(root, "link", "href", "css/base.css") && htmlAssetSuffix(root, "script", "src", "js/base.js") {
+		return true
+	}
+	if len(htmlClasses(root, "wy-menu-vertical")) == 0 || !htmlAssetSuffix(root, "script", "src", "js/theme.js") {
+		return false
+	}
+	foundRuntime := false
+	walkHTML(root, func(node *htmlNode) {
+		if foundRuntime || node.tag != "script" {
+			return
+		}
+		script := htmlNodeText(node)
+		foundRuntime = strings.Contains(script, "mkdocs_page_name") || mkdocsBaseURL.MatchString(script)
+	})
+	return foundRuntime
+}
+
+func htmlAssetSuffix(root *htmlNode, tag, attribute, suffix string) bool {
+	found := false
+	walkHTML(root, func(node *htmlNode) {
+		if found || node.tag != tag {
+			return
+		}
+		value := strings.SplitN(strings.TrimSpace(node.attrs[attribute]), "?", 2)[0]
+		found = strings.HasSuffix(value, suffix)
+	})
+	return found
+}
+
+func mkdocsSiteRoot(view htmlDocumentView, pageURL *url.URL) (string, error) {
 	document := view.content
 	for document.parent != nil {
 		document = document.parent
 	}
-	var scopeRoot string
+	var materialRoot, baseRoot string
 	walkHTML(document, func(node *htmlNode) {
-		if scopeRoot != "" || node.tag != "script" {
+		if node.tag != "script" {
 			return
 		}
-		match := mkdocsScopeURL.FindStringSubmatch(htmlNodeText(node))
-		if len(match) != 2 {
-			return
+		script := htmlNodeText(node)
+		match := mkdocsScopeURL.FindStringSubmatch(script)
+		if len(match) == 2 {
+			resolved, err := pageURL.Parse(match[1])
+			if err == nil && sameOrigin(pageURL, resolved) && resolved.RawQuery == "" {
+				materialRoot = normalizeDocumentationRoot(resolved.Path)
+			}
 		}
-		resolved, err := pageURL.Parse(match[1])
-		if err != nil || !sameOrigin(pageURL, resolved) || resolved.RawQuery != "" {
-			return
+		match = mkdocsBaseURL.FindStringSubmatch(script)
+		if len(match) == 2 {
+			resolved, err := pageURL.Parse(match[1])
+			if err == nil && sameOrigin(pageURL, resolved) && resolved.RawQuery == "" {
+				baseRoot = normalizeDocumentationRoot(resolved.Path)
+			}
 		}
-		scopeRoot = normalizeDocumentationRoot(resolved.Path)
 	})
-	if scopeRoot != "" {
-		return scopeRoot, nil
+	if materialRoot != "" {
+		return materialRoot, nil
+	}
+	if baseRoot != "" {
+		return baseRoot, nil
 	}
 
 	paths := []string{pageURL.Path}
@@ -605,7 +677,7 @@ func mkdocsMaterialSiteRoot(view htmlDocumentView, pageURL *url.URL) (string, er
 	}
 	common := commonDocumentationRoot(paths)
 	if common == "" {
-		return "", errors.New("MkDocs Material primary navigation has no same-origin document root")
+		return "", errors.New("MkDocs primary navigation has no same-origin document root")
 	}
 	return common, nil
 }
@@ -662,7 +734,7 @@ func normalizeDocumentationRoot(value string) string {
 	return strings.TrimSuffix(cleaned, "/") + "/"
 }
 
-func mkdocsMaterialInventory(ctx context.Context, pageURL *url.URL, siteRoot string, reader *sourceReader) ([]string, error) {
+func mkdocsSitemapInventory(ctx context.Context, pageURL *url.URL, siteRoot string, reader *sourceReader) ([]string, error) {
 	sitemap := *pageURL
 	sitemap.Path = path.Join(siteRoot, "sitemap.xml")
 	sitemap.RawPath = ""
@@ -688,7 +760,7 @@ func mkdocsMaterialInventory(ctx context.Context, pageURL *url.URL, siteRoot str
 	urls := make([]string, 0, len(document.Locations))
 	for index, location := range document.Locations {
 		linked, err := url.Parse(strings.TrimSpace(location))
-		if err != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
+		if err != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || linked.RawQuery != "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
 			return nil, fmt.Errorf("MkDocs sitemap %s contains invalid URL at position %d", provenance, index)
 		}
 		linked.Fragment = ""
@@ -704,6 +776,19 @@ func mkdocsMaterialInventory(ctx context.Context, pageURL *url.URL, siteRoot str
 	}
 	sort.Strings(urls)
 	return urls, nil
+}
+
+func mkdocsInventoryURL(value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", err
+	}
+	parsed.RawQuery = ""
+	return canonicalHTTPURL(parsed.String())
+}
+
+func isMkDocsFramework(framework string) bool {
+	return framework == "mkdocs" || framework == "mkdocs-material"
 }
 
 func containsString(values []string, wanted string) bool {
@@ -734,6 +819,16 @@ func firstHTMLClass(root *htmlNode, class string) *htmlNode {
 	var found *htmlNode
 	walkHTML(root, func(node *htmlNode) {
 		if found == nil && hasHTMLClass(node, class) {
+			found = node
+		}
+	})
+	return found
+}
+
+func firstHTMLAttribute(root *htmlNode, attribute, value string) *htmlNode {
+	var found *htmlNode
+	walkHTML(root, func(node *htmlNode) {
+		if found == nil && strings.EqualFold(strings.TrimSpace(node.attrs[attribute]), value) {
 			found = node
 		}
 	})

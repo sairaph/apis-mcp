@@ -23,7 +23,7 @@ Status values are `planned`, `active`, and `complete`.
 | --- | --- | --- | --- | --- |
 | Docusaurus | https://docusaurus.io/docs | https://jestjs.io/docs/getting-started | Static HTML | complete |
 | MkDocs Material | https://squidfunk.github.io/mkdocs-material/getting-started/ | https://docs.astral.sh/ruff/ | Static HTML / sitemap | complete |
-| MkDocs | https://www.mkdocs.org/getting-started/ | https://click.palletsprojects.com/ | Static HTML | planned |
+| MkDocs | https://www.mkdocs.org/getting-started/ | https://python-markdown.github.io/ | Static HTML / sitemap | complete |
 | Sphinx | https://www.sphinx-doc.org/en/master/ | https://docs.python.org/3/ | Static HTML / source | planned |
 | VitePress | https://vitepress.dev/guide/getting-started | https://vuejs.org/guide/introduction.html | Static HTML | planned |
 | Nextra | https://nextra.site/docs | https://swr.vercel.app/docs/getting-started | Static HTML | planned |
@@ -110,6 +110,32 @@ that Material intentionally omits from navigation. Every same-origin sitemap
 entry must be fetched successfully and remain under the detected documentation
 root. Static refresh aliases count as fetched inventory but do not generate
 duplicate Markdown pages.
+
+### MkDocs
+
+Verified on 2026-07-27 against an independent built-in-theme deployment and a
+custom-theme deployment:
+
+| Check | MkDocs development site | Python-Markdown test site |
+| --- | --- | --- |
+| Theme | Built-in default | Custom Nature-based theme |
+| Job ID | `019fa1be-532f-7495-aaa1-ced9d394986d` | `019fa1c3-db5a-7109-be54-1970f4419652` |
+| Framework detection | `mkdocs` | `mkdocs` |
+| Finite sitemap entries fetched | 19 | 68 |
+| Canonical Markdown pages | 19 | 68 |
+| Theme content isolated | Pass | Pass |
+| Heading permalinks excluded | Pass | Pass |
+| Fenced code retained | Pass | Pass |
+| SQLite pages for document | 19 | 68 |
+| FTS acceptance query | `configuration` | `extension` |
+| Detached terminal state | `succeeded` | `succeeded` |
+| Unlimited crawl completed naturally | Pass | Pass |
+| Truncated | No | No |
+
+Plain MkDocs uses a non-empty same-origin sitemap as its authoritative
+inventory. An absent or empty sitemap fails closed because primary navigation
+can omit generated pages. Every inventory entry must be fetched successfully,
+and framework detection must remain consistent across all pages.
 
 ### OpenAPI 3 JSON/YAML
 

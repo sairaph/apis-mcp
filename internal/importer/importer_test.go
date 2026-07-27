@@ -1040,6 +1040,141 @@ func TestDetectHTMLDoesNotMatchMaterialSubstring(t *testing.T) {
 	}
 }
 
+func TestImportHTMLDetectsMkDocsBuiltInThemes(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		startPath   string
+		secondPath  string
+		sitemapPath string
+		page        func(string, string) string
+		sitemap     func(string) string
+	}{
+		{
+			name: "default theme", startPath: "/docs/start/", secondPath: "/docs/second/", sitemapPath: "/docs/sitemap.xml",
+			page: func(title, content string) string {
+				return `<!doctype html><html><head><script>var base_url = "/";</script><link href="../css/base.css" rel="stylesheet"><script>var base_url = "..";</script><script src="../js/base.js"></script></head><body><div id="navbar-collapse"><a href="/docs/start/">Start</a><a href="/docs/second/">Second</a></div><div class="col-md-9" role="main"><h1>` + title + `<a class="headerlink" href="#title">¶</a></h1>` + content + `</div></body></html>`
+			},
+			sitemap: func(serverURL string) string {
+				return fmt.Sprintf(`<urlset><url><loc>%s/docs/start/</loc></url><url><loc>%s/docs/second/</loc></url></urlset>`, serverURL, serverURL)
+			},
+		},
+		{
+			name: "readthedocs theme", startPath: "/", secondPath: "/second/", sitemapPath: "/sitemap.xml",
+			page: func(title, content string) string {
+				return `<!doctype html><html><head><script>var mkdocs_page_name = "Page"; var base_url = ".";</script><script src="js/theme.js"></script></head><body><div class="wy-menu wy-menu-vertical"><a href=".">Home</a><a href="second/">Second</a></div><div class="wy-nav-content"><div class="rst-content"><div role="main" class="document"><div class="section"><h1>` + title + `<a class="headerlink" href="#title">¶</a></h1>` + content + `</div></div></div></div></body></html>`
+			},
+			sitemap: func(serverURL string) string {
+				return fmt.Sprintf(`<urlset><url><loc>%s/</loc></url><url><loc>%s/second/</loc></url></urlset>`, serverURL, serverURL)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			secondRequests := 0
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case test.startPath:
+					fmt.Fprint(writer, test.page("MkDocs Start", `<p>Built-in theme content.</p><pre><code class="language-python">print("mkdocs")</code></pre>`))
+				case test.secondPath:
+					secondRequests++
+					fmt.Fprint(writer, test.page("MkDocs Second", `<p>Independent navigation page.</p>`))
+				case test.sitemapPath:
+					fmt.Fprint(writer, test.sitemap(server.URL))
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			root := t.TempDir()
+			index := filepath.Join(t.TempDir(), "index.sqlite")
+			options := importer.Options{
+				LibraryRoot: root, Rebuild: rebuildFunc(root, index), HTTPClient: server.Client(),
+				HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+			}
+			source := server.URL + test.startPath + "?utm_source=fixture"
+			detection, err := importer.DetectURL(context.Background(), source, options)
+			if err != nil || detection.Framework != "mkdocs" {
+				t.Fatalf("MkDocs detection: %+v, %v", detection, err)
+			}
+			result, err := importer.ImportHTML(context.Background(), "MkDocs Fixture", "v1-"+strings.ReplaceAll(test.name, " ", "-"), source, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Framework != "mkdocs" || result.Pages != 2 || result.Truncated || secondRequests != 1 {
+				t.Fatalf("MkDocs import: %+v, second=%d", result, secondRequests)
+			}
+			var generated string
+			for _, name := range relativeFiles(t, result.Destination) {
+				if filepath.Ext(name) == ".md" && name != "_index.md" {
+					raw, readErr := os.ReadFile(filepath.Join(result.Destination, name))
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					generated += string(raw)
+				}
+			}
+			for _, wanted := range []string{"# MkDocs Start", "Built-in theme content.", "```python\nprint(\"mkdocs\")\n```", "# MkDocs Second"} {
+				if !strings.Contains(generated, wanted) {
+					t.Errorf("generated MkDocs Markdown missing %q:\n%s", wanted, generated)
+				}
+			}
+			if strings.Contains(generated, "¶") {
+				t.Fatalf("heading permalink leaked:\n%s", generated)
+			}
+		})
+	}
+}
+
+func TestImportHTMLRejectsEmptyMkDocsSitemap(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/":
+			fmt.Fprint(writer, `<!doctype html><html><head><link href="css/base.css" rel="stylesheet"><script>var base_url = ".";</script><script src="js/base.js"></script></head><body><div id="navbar-collapse"><a href="/">Home</a></div><main role="main"><h1>Home</h1></main></body></html>`)
+		case "/sitemap.xml":
+			fmt.Fprint(writer, `<urlset></urlset>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	_, err := importer.ImportHTML(context.Background(), "Incomplete MkDocs", "v1", server.URL, importer.Options{
+		LibraryRoot: t.TempDir(), Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "contains no URLs") {
+		t.Fatalf("expected empty sitemap rejection, got %v", err)
+	}
+}
+
+func TestDetectHTMLRecognizesMkDocsMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		html      string
+		framework string
+	}{
+		{name: "generator", html: `<meta name="generator" content="mkdocs-1.6.1"><main><h1>Guide</h1></main>`, framework: "mkdocs"},
+		{name: "build comment", html: `<main role="main"><h1>Guide</h1></main><!-- MkDocs version : 1.6.1
+Docs Build Date UTC : 2026-07-27 00:00:00 -->`, framework: "mkdocs"},
+		{name: "quoted comment", html: `<main role="main"><h1>Guide</h1></main><!-- MkDocs version : 1.6.1 -->`, framework: "unknown"},
+		{name: "malformed generator", html: `<meta name="generator" content="mkdocs-1anything"><main><h1>Guide</h1></main>`, framework: "unknown"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(writer, `<!doctype html><html><body>`+test.html+`</body></html>`)
+			}))
+			defer server.Close()
+			detection, err := importer.DetectURL(context.Background(), server.URL, importer.Options{
+				LibraryRoot: t.TempDir(), Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+			})
+			if err != nil || detection.Framework != test.framework {
+				t.Fatalf("detection: %+v, %v", detection, err)
+			}
+		})
+	}
+}
+
 func TestDetectAndImportHTMLRejectPlainText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain")
