@@ -22,7 +22,7 @@ Status values are `planned`, `active`, and `complete`.
 | Framework | Development deployment | Test deployment | Engine | Status |
 | --- | --- | --- | --- | --- |
 | Docusaurus | https://docusaurus.io/docs | https://jestjs.io/docs/getting-started | Static HTML | complete |
-| MkDocs Material | https://squidfunk.github.io/mkdocs-material/getting-started/ | https://docs.pydantic.dev/latest/ | Static HTML | planned |
+| MkDocs Material | https://squidfunk.github.io/mkdocs-material/getting-started/ | https://docs.astral.sh/ruff/ | Static HTML / sitemap | complete |
 | MkDocs | https://www.mkdocs.org/getting-started/ | https://click.palletsprojects.com/ | Static HTML | planned |
 | Sphinx | https://www.sphinx-doc.org/en/master/ | https://docs.python.org/3/ | Static HTML / source | planned |
 | VitePress | https://vitepress.dev/guide/getting-started | https://vuejs.org/guide/introduction.html | Static HTML | planned |
@@ -81,6 +81,35 @@ Verified on 2026-07-26 against Docusaurus 3.10.1 deployments:
 
 A separate live Docusaurus job was canceled after 26 fetched pages. It reached
 the durable `canceled` state and published no destination or SQLite update.
+
+### MkDocs Material
+
+Verified on 2026-07-27 against Material 9.7 deployments. The former Pydantic
+test deployment was replaced after it migrated to Astro Starlight.
+
+| Check | Material development site | Ruff test site |
+| --- | --- | --- |
+| Framework version | `9.7.0+insiders-4.53.18` | `9.7.6` |
+| Job ID | `019fa19e-ae88-7075-b2f5-28cabd7ad2db` | `019fa19e-ae96-723e-9f82-bb7ee2883f09` |
+| Framework detection | `mkdocs-material` | `mkdocs-material` |
+| Sitemap entries fetched | 108 | 988 |
+| Static redirect aliases | 1 | 0 |
+| Canonical Markdown pages | 107 | 988 |
+| Material content isolated | Pass | Pass |
+| Heading permalinks excluded | Pass | Pass |
+| Fenced code languages retained | Pass | Pass |
+| SQLite pages for document | 107 | 988 |
+| FTS acceptance query | `admonitions` | `pyproject` |
+| Detached terminal state | `succeeded` | `succeeded` |
+| Unlimited crawl completed naturally | Pass | Pass |
+| Truncated | No | No |
+
+MkDocs Material completeness is based on its generated `sitemap.xml`, not only
+the primary sidebar. This covers blog pagination and generated detail pages
+that Material intentionally omits from navigation. Every same-origin sitemap
+entry must be fetched successfully and remain under the detected documentation
+root. Static refresh aliases count as fetched inventory but do not generate
+duplicate Markdown pages.
 
 ### OpenAPI 3 JSON/YAML
 

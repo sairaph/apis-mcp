@@ -3,6 +3,7 @@ package importer
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -22,6 +24,13 @@ const (
 	DefaultMaxHTMLDepth = 3
 	maxHTMLTreeDepth    = 128
 	maxHTMLNodes        = 50_000
+	maxHTMLSitemapURLs  = 20_000
+)
+
+var (
+	htmlMetaTag             = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
+	mkdocsMaterialGenerator = regexp.MustCompile(`(?:^|,\s*)mkdocs-material(?:-|$)`)
+	mkdocsScopeURL          = regexp.MustCompile(`__md_scope\s*=\s*new\s+URL\(\s*["']([^"']*)["']`)
 )
 
 type htmlNode struct {
@@ -29,6 +38,7 @@ type htmlNode struct {
 	attrs        map[string]string
 	text         string
 	children     []*htmlNode
+	parent       *htmlNode
 	htmlDocument bool
 }
 
@@ -44,6 +54,7 @@ type htmlDocumentView struct {
 	content       *htmlNode
 	linkRoots     []*htmlNode
 	includeHeader bool
+	profileError  error
 }
 
 // ImportHTML crawls a bounded set of static, same-origin HTML pages and
@@ -65,6 +76,7 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 	if options.HTMLScope == "path" {
 		scopePath = documentationPathScope(start.Path)
 	}
+	var finiteInventory map[string]bool
 
 	// A same-origin link must not escape through an HTTP redirect either.
 	client := *options.HTTPClient
@@ -72,6 +84,12 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if !sameOrigin(start, request.URL) || options.HTMLScope == "path" && !withinDocumentationPath(request.URL.Path, scopePath) {
 			return errors.New("HTML crawl redirect crosses the source origin")
+		}
+		if finiteInventory != nil {
+			canonical, err := canonicalHTTPURL(request.URL.String())
+			if err != nil || !finiteInventory[canonical] {
+				return errors.New("HTML crawl redirect crosses the finite inventory")
+			}
 		}
 		if previousRedirectPolicy != nil {
 			return previousRedirectPolicy(request, via)
@@ -98,14 +116,19 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 	pages := make([]crawledPage, 0, pageCapacity)
 	rootSource := start.String()
 	rootFramework := ""
+	fetchedInventory := make(map[string]bool)
+	generatedInventory := make(map[string]bool)
+	inventoryAliases := make(map[string]string)
+	crawlRequests := 0
 	crawlLimited := false
 	var crawlErrors []error
-	for len(queue) > 0 && (options.MaxHTMLPages < 0 || len(pages) < options.MaxHTMLPages) {
+	for len(queue) > 0 && (options.MaxHTMLPages < 0 || crawlRequests < options.MaxHTMLPages) {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
 		pending := queue[0]
 		queue = queue[1:]
+		crawlRequests++
 		raw, provenance, readErr := reader.read(ctx, pending.source, nil)
 		if readErr != nil {
 			if len(pages) == 0 {
@@ -120,7 +143,39 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		if parseErr != nil || !sameOrigin(start, pageURL) {
 			continue
 		}
+		if finiteInventory != nil {
+			canonicalPending, canonicalErr := canonicalHTTPURL(pending.source)
+			if canonicalErr == nil && finiteInventory[canonicalPending] {
+				fetchedInventory[canonicalPending] = true
+			}
+			canonicalProvenance, canonicalErr := canonicalHTTPURL(provenance)
+			if canonicalErr != nil || !finiteInventory[canonicalProvenance] || !withinDocumentationPath(pageURL.Path, scopePath) {
+				return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: sitemap entry %s redirected outside its finite inventory", pending.source)
+			}
+			if canonicalErr == nil && canonicalPending != canonicalProvenance {
+				inventoryAliases[canonicalPending] = canonicalProvenance
+			}
+		}
 		if processed[provenance] {
+			continue
+		}
+		redirected, refreshErr := htmlRefreshRedirect(raw, pageURL)
+		if refreshErr != nil {
+			return Result{}, fmt.Errorf("%s crawl did not complete: invalid refresh on %s: %w", rootFramework, provenance, refreshErr)
+		}
+		if redirected != nil {
+			canonicalRedirect, canonicalErr := canonicalHTTPURL(redirected.String())
+			if finiteInventory == nil || canonicalErr != nil || !finiteInventory[canonicalRedirect] {
+				return Result{}, fmt.Errorf("%s crawl did not complete: page %s redirects outside its finite inventory", rootFramework, provenance)
+			}
+			canonicalAlias, canonicalErr := canonicalHTTPURL(provenance)
+			if canonicalErr != nil || canonicalAlias == canonicalRedirect {
+				return Result{}, fmt.Errorf("%s crawl did not complete: page %s has a self-referential refresh", rootFramework, provenance)
+			}
+			inventoryAliases[canonicalAlias] = canonicalRedirect
+			seen[provenance] = true
+			processed[provenance] = true
+			reportProgress(options, Progress{Stage: "redirect", Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)})
 			continue
 		}
 		document, parseErr := parseHTML(raw)
@@ -147,8 +202,43 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			crawlErrors = append(crawlErrors, fmt.Errorf("framework changed from %s to %s at %s", rootFramework, view.framework, provenance))
 			continue
 		}
+		if view.profileError != nil {
+			return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, view.profileError)
+		}
 		seen[provenance] = true
 		processed[provenance] = true
+		if len(pages) == 0 && rootFramework == "mkdocs-material" {
+			siteRoot, inventoryErr := mkdocsMaterialSiteRoot(view, pageURL)
+			if inventoryErr == nil {
+				scopePath = siteRoot
+			}
+			var inventory []string
+			if inventoryErr == nil {
+				inventory, inventoryErr = mkdocsMaterialInventory(ctx, pageURL, siteRoot, reader)
+			}
+			if inventoryErr != nil {
+				return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: %w", inventoryErr)
+			}
+			finiteInventory = make(map[string]bool, len(inventory))
+			for _, linked := range inventory {
+				finiteInventory[linked] = true
+			}
+			canonicalProvenance, canonicalErr := canonicalHTTPURL(provenance)
+			if canonicalErr != nil || !containsString(inventory, canonicalProvenance) {
+				return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: sitemap does not contain starting page %s", provenance)
+			}
+			fetchedInventory[canonicalProvenance] = true
+			if options.MaxHTMLDepth == 0 {
+				crawlLimited = len(inventory) > 1
+			} else {
+				for _, linked := range inventory {
+					if !seen[linked] {
+						seen[linked] = true
+						queue = append(queue, pendingPage{source: linked, depth: 1})
+					}
+				}
+			}
+		}
 		title, markdown := htmlToMarkdown(view.content, pageURL, view.includeHeader)
 		if title == "" {
 			title = pageTitleFromURL(pageURL)
@@ -160,9 +250,18 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			title: title, description: htmlMetadataDescription(document),
 			source: provenance, markdown: markdown,
 		})
+		if finiteInventory != nil {
+			canonicalGenerated, canonicalErr := canonicalHTTPURL(provenance)
+			if canonicalErr == nil {
+				generatedInventory[canonicalGenerated] = true
+			}
+		}
 		reportProgress(options, Progress{Stage: "page", Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)})
 
-		linkedPages := htmlPageLinks(view.linkRoots, pageURL, options.HTMLScope, scopePath)
+		var linkedPages []string
+		if rootFramework != "mkdocs-material" {
+			linkedPages = htmlPageLinks(view.linkRoots, pageURL, options.HTMLScope, scopePath)
+		}
 		if options.MaxHTMLDepth >= 0 && pending.depth >= options.MaxHTMLDepth {
 			for _, linked := range linkedPages {
 				if !seen[linked] {
@@ -182,6 +281,14 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 	}
 	if len(crawlErrors) > 0 {
 		return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, errors.Join(crawlErrors...))
+	}
+	if len(finiteInventory) > 0 && !crawlLimited && len(queue) == 0 && len(fetchedInventory) != len(finiteInventory) {
+		return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: sitemap advertised %d entries but %d were fetched", len(finiteInventory), len(fetchedInventory))
+	}
+	if len(finiteInventory) > 0 && !crawlLimited && len(queue) == 0 {
+		if err := validateInventoryAliases(inventoryAliases, generatedInventory); err != nil {
+			return Result{}, fmt.Errorf("mkdocs-material crawl did not complete: %w", err)
+		}
 	}
 	if len(pages) == 0 {
 		return Result{}, errors.New("HTML crawl produced no pages")
@@ -262,12 +369,12 @@ func parseHTML(raw []byte) (*htmlNode, error) {
 				for _, attribute := range current.Attr {
 					attributes[strings.ToLower(attribute.Key)] = attribute.Val
 				}
-				converted = &htmlNode{tag: strings.ToLower(current.Data), attrs: attributes}
+				converted = &htmlNode{tag: strings.ToLower(current.Data), attrs: attributes, parent: parent}
 			case xhtml.TextNode:
 				if current.Data == "" {
 					continue
 				}
-				converted = &htmlNode{text: current.Data}
+				converted = &htmlNode{text: current.Data, parent: parent}
 			default:
 				if err := convert(current.FirstChild, parent, depth); err != nil {
 					return err
@@ -325,6 +432,74 @@ func inspectHTMLSource(raw []byte) (bool, error) {
 	}
 }
 
+func htmlRefreshRedirect(raw []byte, base *url.URL) (*url.URL, error) {
+	tokenizer := xhtml.NewTokenizer(bytes.NewReader(raw))
+	inNoScript := false
+	for {
+		tokenType := tokenizer.Next()
+		switch tokenType {
+		case xhtml.ErrorToken:
+			return nil, nil
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
+			token := tokenizer.Token()
+			if strings.EqualFold(token.Data, "noscript") {
+				inNoScript = tokenType == xhtml.StartTagToken
+				continue
+			}
+			if strings.EqualFold(token.Data, "meta") {
+				if target, err := refreshTargetFromMeta(token, base); target != nil || err != nil {
+					return target, err
+				}
+			}
+		case xhtml.EndTagToken:
+			if strings.EqualFold(tokenizer.Token().Data, "noscript") {
+				inNoScript = false
+			}
+		case xhtml.TextToken:
+			if !inNoScript {
+				continue
+			}
+			for _, tag := range htmlMetaTag.FindAll(tokenizer.Text(), -1) {
+				nested := xhtml.NewTokenizer(bytes.NewReader(tag))
+				if nestedType := nested.Next(); nestedType == xhtml.StartTagToken || nestedType == xhtml.SelfClosingTagToken {
+					if target, err := refreshTargetFromMeta(nested.Token(), base); target != nil || err != nil {
+						return target, err
+					}
+				}
+			}
+		}
+	}
+}
+
+func refreshTargetFromMeta(token xhtml.Token, base *url.URL) (*url.URL, error) {
+	attributes := make(map[string]string, len(token.Attr))
+	for _, attribute := range token.Attr {
+		attributes[strings.ToLower(attribute.Key)] = strings.TrimSpace(attribute.Val)
+	}
+	if !strings.EqualFold(attributes["http-equiv"], "refresh") {
+		return nil, nil
+	}
+	content := attributes["content"]
+	parts := strings.SplitN(content, ";", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) != "0" {
+		return nil, errors.New("refresh meta tag must use a zero-second delay")
+	}
+	index := strings.Index(strings.ToLower(parts[1]), "url=")
+	if index < 0 {
+		return nil, errors.New("refresh meta tag has no URL")
+	}
+	target := strings.Trim(strings.TrimSpace(parts[1][index+4:]), "'\"")
+	if target == "" {
+		return nil, errors.New("refresh meta tag has an empty URL")
+	}
+	resolved, err := base.Parse(target)
+	if err != nil || !sameOrigin(base, resolved) || !likelyHTMLPath(resolved.Path) {
+		return nil, errors.New("refresh target is not a same-origin HTML page")
+	}
+	resolved.Fragment = ""
+	return resolved, nil
+}
+
 func isHTMLDocument(root *htmlNode) bool {
 	return root != nil && root.htmlDocument
 }
@@ -339,19 +514,30 @@ func walkHTML(node *htmlNode, visit func(*htmlNode)) {
 func inspectHTMLDocument(root *htmlNode) htmlDocumentView {
 	view := htmlDocumentView{content: root, linkRoots: []*htmlNode{root}}
 	view.framework = detectHTMLFramework(root)
-	if view.framework != "docusaurus" {
-		return view
-	}
-	if content := firstHTMLClass(root, "theme-doc-markdown"); content != nil {
+	switch view.framework {
+	case "docusaurus":
+		if content := firstHTMLClass(root, "theme-doc-markdown"); content != nil {
+			view.content = content
+			view.includeHeader = true
+		} else if content := firstHTMLClassPrefix(root, "generatedIndexPage_"); content != nil {
+			view.content = content
+			view.includeHeader = true
+		}
+		view.linkRoots = append(htmlClasses(root, "theme-doc-sidebar-menu"), htmlClasses(root, "pagination-nav")...)
+		if len(view.linkRoots) == 0 {
+			view.linkRoots = []*htmlNode{view.content}
+		}
+	case "mkdocs-material":
+		content := firstHTMLClass(root, "md-content__inner")
+		if content == nil {
+			view.profileError = errors.New("MkDocs Material page has no md-content__inner content container")
+			return view
+		}
 		view.content = content
-		view.includeHeader = true
-	} else if content := firstHTMLClassPrefix(root, "generatedIndexPage_"); content != nil {
-		view.content = content
-		view.includeHeader = true
-	}
-	view.linkRoots = append(htmlClasses(root, "theme-doc-sidebar-menu"), htmlClasses(root, "pagination-nav")...)
-	if len(view.linkRoots) == 0 {
-		view.linkRoots = []*htmlNode{view.content}
+		view.linkRoots = htmlClasses(root, "md-nav--primary")
+		if len(view.linkRoots) == 0 {
+			view.profileError = errors.New("MkDocs Material page has no primary navigation")
+		}
 	}
 	return view
 }
@@ -362,15 +548,186 @@ func detectHTMLFramework(root *htmlNode) string {
 		if framework != "" {
 			return
 		}
-		if node.tag == "meta" && strings.EqualFold(strings.TrimSpace(node.attrs["name"]), "generator") && strings.HasPrefix(strings.ToLower(strings.TrimSpace(node.attrs["content"])), "docusaurus") {
-			framework = "docusaurus"
-			return
+		if node.tag == "meta" && strings.EqualFold(strings.TrimSpace(node.attrs["name"]), "generator") {
+			generator := strings.ToLower(strings.TrimSpace(node.attrs["content"]))
+			switch {
+			case mkdocsMaterialGenerator.MatchString(generator):
+				framework = "mkdocs-material"
+				return
+			case strings.HasPrefix(generator, "docusaurus"):
+				framework = "docusaurus"
+				return
+			}
 		}
 		if node.attrs["id"] == "__docusaurus" || hasHTMLClass(node, "docs-doc-page") && hasHTMLClass(node, "plugin-docs") {
 			framework = "docusaurus"
 		}
 	})
 	return framework
+}
+
+func mkdocsMaterialSiteRoot(view htmlDocumentView, pageURL *url.URL) (string, error) {
+	document := view.content
+	for document.parent != nil {
+		document = document.parent
+	}
+	var scopeRoot string
+	walkHTML(document, func(node *htmlNode) {
+		if scopeRoot != "" || node.tag != "script" {
+			return
+		}
+		match := mkdocsScopeURL.FindStringSubmatch(htmlNodeText(node))
+		if len(match) != 2 {
+			return
+		}
+		resolved, err := pageURL.Parse(match[1])
+		if err != nil || !sameOrigin(pageURL, resolved) || resolved.RawQuery != "" {
+			return
+		}
+		scopeRoot = normalizeDocumentationRoot(resolved.Path)
+	})
+	if scopeRoot != "" {
+		return scopeRoot, nil
+	}
+
+	paths := []string{pageURL.Path}
+	for _, root := range view.linkRoots {
+		walkHTML(root, func(node *htmlNode) {
+			if node.tag != "a" || hasHTMLAncestorClass(node, "md-nav--secondary") {
+				return
+			}
+			linked, err := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+			if err != nil || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || !likelyHTMLPath(linked.Path) {
+				return
+			}
+			paths = append(paths, linked.Path)
+		})
+	}
+	common := commonDocumentationRoot(paths)
+	if common == "" {
+		return "", errors.New("MkDocs Material primary navigation has no same-origin document root")
+	}
+	return common, nil
+}
+
+func hasHTMLAncestorClass(node *htmlNode, class string) bool {
+	for current := node.parent; current != nil; current = current.parent {
+		if hasHTMLClass(current, class) {
+			return true
+		}
+	}
+	return false
+}
+
+func commonDocumentationRoot(paths []string) string {
+	var common []string
+	for index, value := range paths {
+		root := normalizeDocumentationRoot(value)
+		segments := strings.Split(strings.Trim(root, "/"), "/")
+		if root == "/" {
+			segments = nil
+		}
+		if index == 0 {
+			common = append(common, segments...)
+			continue
+		}
+		limit := len(common)
+		if len(segments) < limit {
+			limit = len(segments)
+		}
+		matched := 0
+		for matched < limit && common[matched] == segments[matched] {
+			matched++
+		}
+		common = common[:matched]
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	if len(common) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(common, "/") + "/"
+}
+
+func normalizeDocumentationRoot(value string) string {
+	directory := strings.HasSuffix(value, "/")
+	cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
+	if !directory && path.Ext(cleaned) != "" {
+		cleaned = path.Dir(cleaned)
+	}
+	if cleaned == "/" {
+		return "/"
+	}
+	return strings.TrimSuffix(cleaned, "/") + "/"
+}
+
+func mkdocsMaterialInventory(ctx context.Context, pageURL *url.URL, siteRoot string, reader *sourceReader) ([]string, error) {
+	sitemap := *pageURL
+	sitemap.Path = path.Join(siteRoot, "sitemap.xml")
+	sitemap.RawPath = ""
+	sitemap.RawQuery = ""
+	sitemap.Fragment = ""
+	raw, provenance, err := reader.read(ctx, sitemap.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetch MkDocs sitemap %s: %w", sitemap.String(), err)
+	}
+	var document struct {
+		Locations []string `xml:"url>loc"`
+	}
+	if err := xml.Unmarshal(raw, &document); err != nil {
+		return nil, fmt.Errorf("parse MkDocs sitemap %s: %w", provenance, err)
+	}
+	if len(document.Locations) == 0 {
+		return nil, fmt.Errorf("MkDocs sitemap %s contains no URLs", provenance)
+	}
+	if len(document.Locations) > maxHTMLSitemapURLs {
+		return nil, fmt.Errorf("MkDocs sitemap %s exceeds %d URLs", provenance, maxHTMLSitemapURLs)
+	}
+	seen := make(map[string]bool, len(document.Locations))
+	urls := make([]string, 0, len(document.Locations))
+	for index, location := range document.Locations {
+		linked, err := url.Parse(strings.TrimSpace(location))
+		if err != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
+			return nil, fmt.Errorf("MkDocs sitemap %s contains invalid URL at position %d", provenance, index)
+		}
+		linked.Fragment = ""
+		canonical, err := canonicalHTTPURL(linked.String())
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize MkDocs sitemap URL %q: %w", location, err)
+		}
+		if seen[canonical] {
+			return nil, fmt.Errorf("MkDocs sitemap %s repeats URL %s", provenance, canonical)
+		}
+		seen[canonical] = true
+		urls = append(urls, canonical)
+	}
+	sort.Strings(urls)
+	return urls, nil
+}
+
+func containsString(values []string, wanted string) bool {
+	index := sort.SearchStrings(values, wanted)
+	return index < len(values) && values[index] == wanted
+}
+
+func validateInventoryAliases(aliases map[string]string, generated map[string]bool) error {
+	for alias, target := range aliases {
+		seen := map[string]bool{alias: true}
+		current := target
+		for !generated[current] {
+			if seen[current] {
+				return fmt.Errorf("inventory alias cycle starts at %s", alias)
+			}
+			seen[current] = true
+			next, exists := aliases[current]
+			if !exists {
+				return fmt.Errorf("inventory alias %s does not terminate at generated content", alias)
+			}
+			current = next
+		}
+	}
+	return nil
 }
 
 func firstHTMLClass(root *htmlNode, class string) *htmlNode {
@@ -530,7 +887,13 @@ func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool
 			output.WriteByte('*')
 			return
 		case "a":
-			if hasHTMLClass(current, "hash-link") {
+			if hasHTMLClass(current, "hash-link") || hasHTMLClass(current, "headerlink") {
+				return
+			}
+			if hasHTMLClass(current, "toclink") {
+				for _, child := range current.children {
+					render(child)
+				}
 				return
 			}
 			label := cleanInline(htmlNodeText(current))
@@ -699,9 +1062,14 @@ func htmlHasBlockChild(node *htmlNode) bool {
 }
 
 func htmlCodeLanguage(node *htmlNode) string {
-	for _, class := range strings.Fields(node.attrs["class"]) {
-		if strings.HasPrefix(class, "language-") {
-			return strings.TrimPrefix(class, "language-")
+	for current := node; current != nil; current = current.parent {
+		if current != node && (current.tag == "article" || current.tag == "main" || current.tag == "section" || current.tag == "body" || current.tag == "html" || current.tag == "document" || hasHTMLClass(current, "md-content__inner")) {
+			return ""
+		}
+		for _, class := range strings.Fields(current.attrs["class"]) {
+			if strings.HasPrefix(class, "language-") {
+				return strings.TrimPrefix(class, "language-")
+			}
 		}
 	}
 	return ""

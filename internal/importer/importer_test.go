@@ -784,6 +784,262 @@ func TestImportHTMLDetectsAndScrapesDocusaurus(t *testing.T) {
 	}
 }
 
+func TestImportHTMLDetectsAndScrapesMkDocsMaterialSitemap(t *testing.T) {
+	secondRequests := 0
+	aliasRequests := 0
+	excludedRequests := 0
+	var server *httptest.Server
+	materialPage := func(title, content string) string {
+		return `<!doctype html><html><head><meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6"><title>Chrome</title></head><body>` +
+			`<header><a href="/blog/">Blog chrome</a></header>` +
+			`<nav class="md-nav md-nav--primary" data-md-level="0"><a href="/docs/getting-started/">Start</a><a href="/docs/second/">Second</a>` +
+			`<nav class="md-nav md-nav--secondary"><a href="/docs/not-in-sitemap/">TOC</a></nav></nav>` +
+			`<article class="md-content__inner md-typeset language-french"><h1>` + title + `<a class="headerlink" href="#title">¶</a></h1>` + content + `</article>` +
+			`<footer>Footer chrome</footer></body></html>`
+	}
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/getting-started/":
+			fmt.Fprint(writer, materialPage("Getting Started", `<script>const example = '<meta http-equiv="refresh" content="0;url=/docs/second/">'</script><!-- <meta http-equiv="refresh" content="0;url=/docs/second/"> --><p>Material content.</p><div class="language-python highlight"><pre><code>print("material")</code></pre></div><pre><code>plain()</code></pre><p><a href="/docs/not-in-sitemap/">Excluded content link</a></p>`))
+		case "/docs/second/":
+			secondRequests++
+			fmt.Fprint(writer, materialPage(`<a class="toclink" href="#second">Second Guide</a>`, `<p>Independent second page.</p>`))
+		case "/docs/alias/":
+			aliasRequests++
+			fmt.Fprint(writer, `<!doctype html><html><head><noscript><meta http-equiv="refresh" content="0;url=../second/"></noscript></head><body></body></html>`)
+		case "/docs/sitemap.xml":
+			writer.Header().Set("Content-Type", "application/xml")
+			fmt.Fprintf(writer, `<?xml version="1.0"?><urlset><url><loc>%s/docs/getting-started/</loc></url><url><loc>%s/docs/alias/</loc></url><url><loc>%s/docs/second/</loc></url></urlset>`, server.URL, server.URL, server.URL)
+		case "/docs/not-in-sitemap/", "/blog/":
+			excludedRequests++
+			http.Error(writer, "not documentation inventory", http.StatusInternalServerError)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	options := importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, index), HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	}
+	detection, err := importer.DetectURL(context.Background(), server.URL+"/docs/getting-started/", options)
+	if err != nil || detection.Engine != "html" || detection.Framework != "mkdocs-material" {
+		t.Fatalf("unexpected detection: %+v, %v", detection, err)
+	}
+	result, err := importer.ImportHTML(context.Background(), "Material Fixture", "v1", server.URL+"/docs/getting-started/", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Framework != "mkdocs-material" || result.Pages != 2 || result.Truncated || secondRequests != 1 || aliasRequests != 1 || excludedRequests != 0 {
+		t.Fatalf("unexpected import: result=%+v second=%d alias=%d excluded=%d", result, secondRequests, aliasRequests, excludedRequests)
+	}
+	var generated string
+	for _, name := range relativeFiles(t, result.Destination) {
+		if filepath.Ext(name) != ".md" || name == "_index.md" {
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(result.Destination, name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		generated += string(raw)
+	}
+	for _, wanted := range []string{"# Getting Started", "Material content.", "```python\nprint(\"material\")\n```", "```\nplain()\n```", "# Second Guide", "Independent second page."} {
+		if !strings.Contains(generated, wanted) {
+			t.Errorf("generated Material Markdown missing %q:\n%s", wanted, generated)
+		}
+	}
+	for _, unwanted := range []string{"¶", "Blog chrome", "TOC", "Footer chrome", "[Second Guide](", "```french"} {
+		if strings.Contains(generated, unwanted) {
+			t.Errorf("generated Material Markdown contains %q:\n%s", unwanted, generated)
+		}
+	}
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	search, err := snapshot.Search(context.Background(), library.SearchRequest{DocID: "material-fixture-v1", Query: "material"})
+	if err != nil || search.Total == 0 {
+		t.Fatalf("indexed Material search: %+v, %v", search, err)
+	}
+}
+
+func TestImportHTMLMkDocsMaterialFailsIncompleteSitemap(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/start/":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6"></head><body><nav class="md-nav--primary"><a href="/docs/">Docs</a></nav><article class="md-content__inner"><h1>Start</h1></article></body></html>`)
+		case "/docs/sitemap.xml":
+			fmt.Fprintf(writer, `<urlset><url><loc>%s/docs/start/</loc></url><url><loc>%s/docs/missing/</loc></url></urlset>`, server.URL, server.URL)
+		case "/docs/missing/":
+			http.Error(writer, "missing", http.StatusServiceUnavailable)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	_, err := importer.ImportHTML(context.Background(), "Incomplete Material", "v1", server.URL+"/docs/start/", importer.Options{
+		LibraryRoot: root, Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "mkdocs-material crawl did not complete") || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("expected incomplete Material failure, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "incomplete-material", "v1")); !os.IsNotExist(statErr) {
+		t.Fatalf("incomplete Material destination exists: %v", statErr)
+	}
+}
+
+func TestImportHTMLMkDocsMaterialBoundsRefreshAliases(t *testing.T) {
+	aliasRequests := 0
+	targetRequests := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/start/":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6"></head><body><nav class="md-nav--primary"><a href="/docs/start/">Start</a><a href="/docs/target/">Target</a></nav><article class="md-content__inner"><h1>Start</h1></article></body></html>`)
+		case "/docs/sitemap.xml":
+			fmt.Fprintf(writer, `<urlset><url><loc>%s/docs/start/</loc></url><url><loc>%s/docs/alias/</loc></url><url><loc>%s/docs/target/</loc></url></urlset>`, server.URL, server.URL, server.URL)
+		case "/docs/alias/":
+			aliasRequests++
+			fmt.Fprint(writer, `<html><head><meta http-equiv="refresh" content="0;url=../target/"></head></html>`)
+		case "/docs/target/":
+			targetRequests++
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6"></head><body><nav class="md-nav--primary"><a href="/docs/start/">Start</a><a href="/docs/target/">Target</a></nav><article class="md-content__inner"><h1>Target</h1></article></body></html>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	result, err := importer.ImportHTML(context.Background(), "Bounded Material", "v1", server.URL+"/docs/start/", importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: 2, MaxHTMLDepth: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Pages != 1 || !result.Truncated || aliasRequests != 1 || targetRequests != 0 {
+		t.Fatalf("alias limit bypass: result=%+v alias=%d target=%d", result, aliasRequests, targetRequests)
+	}
+}
+
+func TestImportHTMLMkDocsMaterialRejectsHTTPRedirectOutsideInventory(t *testing.T) {
+	unlistedRequests := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/start/":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6"></head><body><nav class="md-nav--primary"><a href="/docs/start/">Start</a><a href="/docs/advertised/">Advertised</a></nav><article class="md-content__inner"><h1>Start</h1></article></body></html>`)
+		case "/docs/sitemap.xml":
+			fmt.Fprintf(writer, `<urlset><url><loc>%s/docs/start/</loc></url><url><loc>%s/docs/advertised/</loc></url><url><loc>%s/docs/final/</loc></url></urlset>`, server.URL, server.URL, server.URL)
+		case "/docs/advertised/":
+			http.Redirect(writer, request, "/docs/unlisted/", http.StatusFound)
+		case "/docs/unlisted/":
+			unlistedRequests++
+			http.Redirect(writer, request, "/docs/final/", http.StatusFound)
+		case "/docs/final/":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6"></head><body><nav class="md-nav--primary"><a href="/docs/start/">Start</a><a href="/docs/final/">Final</a></nav><article class="md-content__inner"><h1>Final</h1></article></body></html>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	_, err := importer.ImportHTML(context.Background(), "Redirected Material", "v1", server.URL+"/docs/start/", importer.Options{
+		LibraryRoot: root, Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "redirect crosses the finite inventory") {
+		t.Fatalf("expected finite inventory redirect rejection, got %v", err)
+	}
+	if unlistedRequests != 0 {
+		t.Fatalf("unlisted intermediate redirect received %d requests", unlistedRequests)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "redirected-material", "v1")); !os.IsNotExist(statErr) {
+		t.Fatalf("redirected Material destination exists: %v", statErr)
+	}
+}
+
+func TestImportHTMLMkDocsMaterialRejectsRefreshCycle(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/start/":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6"></head><body><nav class="md-nav--primary"><a href="/docs/start/">Start</a><a href="/docs/a/">A</a><a href="/docs/b/">B</a></nav><article class="md-content__inner"><h1>Start</h1></article></body></html>`)
+		case "/docs/sitemap.xml":
+			fmt.Fprintf(writer, `<urlset><url><loc>%s/docs/start/</loc></url><url><loc>%s/docs/a/</loc></url><url><loc>%s/docs/b/</loc></url></urlset>`, server.URL, server.URL, server.URL)
+		case "/docs/a/":
+			fmt.Fprint(writer, `<html><head><meta http-equiv="refresh" content="0;url=../b/"></head></html>`)
+		case "/docs/b/":
+			fmt.Fprint(writer, `<html><head><meta http-equiv="refresh" content="0;url=../a/"></head></html>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	_, err := importer.ImportHTML(context.Background(), "Cyclic Material", "v1", server.URL+"/docs/start/", importer.Options{
+		LibraryRoot: root, Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "inventory alias cycle") {
+		t.Fatalf("expected refresh cycle rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "cyclic-material", "v1")); !os.IsNotExist(statErr) {
+		t.Fatalf("cyclic Material destination exists: %v", statErr)
+	}
+}
+
+func TestImportHTMLMkDocsMaterialUsesScopeScript(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/nested/guide/start/":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6"><script>__md_scope=new URL("../..",location)</script></head><body><nav class="md-nav--primary"><a href="/nested/guide/start/">Start</a></nav><article class="md-content__inner"><h1>Nested Start</h1></article></body></html>`)
+		case "/nested/other/":
+			fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6"></head><body><nav class="md-nav--primary"><a href="/nested/guide/start/">Start</a></nav><article class="md-content__inner"><h1>Other</h1></article></body></html>`)
+		case "/nested/sitemap.xml":
+			fmt.Fprintf(writer, `<urlset><url><loc>%s/nested/guide/start/</loc></url><url><loc>%s/nested/other/</loc></url></urlset>`, server.URL, server.URL)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	result, err := importer.ImportHTML(context.Background(), "Scoped Material", "v1", server.URL+"/nested/guide/start/", importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	})
+	if err != nil || result.Pages != 2 || result.Truncated {
+		t.Fatalf("scope script import: %+v, %v", result, err)
+	}
+}
+
+func TestDetectHTMLDoesNotMatchMaterialSubstring(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(writer, `<!doctype html><html><head><meta name="generator" content="not-mkdocs-materialized"></head><body><main><h1>Generic</h1></main></body></html>`)
+	}))
+	defer server.Close()
+	detection, err := importer.DetectURL(context.Background(), server.URL, importer.Options{
+		LibraryRoot: t.TempDir(), Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+	})
+	if err != nil || detection.Framework != "unknown" {
+		t.Fatalf("unexpected substring detection: %+v, %v", detection, err)
+	}
+}
+
 func TestDetectAndImportHTMLRejectPlainText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain")
