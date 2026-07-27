@@ -274,6 +274,10 @@ func (reader *sourceReader) readFromOrigin(ctx context.Context, source string, b
 	}
 	var raw []byte
 	if isHTTP {
+		resolvedURL, parseErr := url.Parse(resolved)
+		if parseErr != nil || resolvedURL.User != nil {
+			return nil, "", errors.New("HTTP source URL must not contain credentials")
+		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved, nil)
 		if err != nil {
 			return nil, "", err

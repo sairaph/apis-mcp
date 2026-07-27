@@ -132,6 +132,51 @@ func TestWorkerScopesDocusaurusToStartingPath(t *testing.T) {
 	}
 }
 
+func TestWorkerExhaustsMDBookTOC(t *testing.T) {
+	firstChapterRequests := 0
+	secondRequests := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/book/":
+			fmt.Fprint(writer, `<!doctype html><html><head><!-- Book generated using mdBook --><title>Worker Book</title><script src="toc-fixture.js"></script></head><body><nav id="mdbook-sidebar"><noscript><iframe class="sidebar-iframe-outer" src="toc.html"></iframe></noscript></nav><div id="mdbook-content"><main><h1><a class="header" href="#book">Worker Book</a></h1><p>Durable mdBook dispatch.</p></main></div></body></html>`)
+		case "/book/toc.html":
+			fmt.Fprint(writer, `<html><body class="sidebar-iframe-inner"><ol class="chapter"><li><a href="index.html">Worker Book</a></li><li><a href="second.html">Second</a></li></ol></body></html>`)
+		case "/book/index.html":
+			firstChapterRequests++
+			fmt.Fprint(writer, `<!doctype html><html><head><!-- Book generated using mdBook --><title>Worker Book</title><script src="toc-fixture.js"></script></head><body><nav id="mdbook-sidebar"></nav><div id="mdbook-content"><main><h1><a class="header" href="#book">Worker Book</a></h1><p>Durable mdBook dispatch.</p></main></div></body></html>`)
+		case "/book/second.html":
+			secondRequests++
+			fmt.Fprint(writer, `<!doctype html><html><head><!-- Book generated using mdBook --><title>Second - Worker Book</title><script src="toc-fixture.js"></script></head><body><nav id="mdbook-sidebar"></nav><div id="mdbook-content"><main><h1><a class="header" href="#second">Second</a></h1><p>TOC-only worker page.</p></main></div></body></html>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	store, err := openJobStore(t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.create(ingestRequest{
+		Output: store.output, Source: server.URL + "/book/", Name: "Worker mdBook", Version: "v1",
+		Scope: "path", MaxPages: -1, MaxDepth: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runWorker(context.Background(), store, job.ID, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	job, err = store.get(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.State != jobSucceeded || job.Detection == nil || job.Detection.Engine != "html" || job.Detection.Framework != "mdbook" || job.Result == nil || job.Result.Framework != "mdbook" || job.Result.Pages != 2 || job.Result.Truncated || firstChapterRequests != 1 || secondRequests != 1 {
+		t.Fatalf("unexpected mdBook job: %+v, first requests=%d second requests=%d", job, firstChapterRequests, secondRequests)
+	}
+}
+
 func TestWorkerDispatchesDocsifyImporter(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	const tree = "abcdef0123456789abcdef0123456789abcdef01"
@@ -242,6 +287,20 @@ func TestQueuedJobCanBeCanceledWithoutWorker(t *testing.T) {
 	job, err = store.cancel(job.ID)
 	if err != nil || job.State != jobCanceled || !job.CancelRequested {
 		t.Fatalf("queued cancellation: %+v, %v", job, err)
+	}
+}
+
+func TestJobRejectsCredentialBearingSourceBeforePersistence(t *testing.T) {
+	store, err := openJobStore(t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.create(ingestRequest{Output: store.output, Source: "https://user:secret@docs.example/book/", Name: "Private", Version: "v1", Scope: "path", MaxPages: -1, MaxDepth: -1}); err == nil {
+		t.Fatal("credential-bearing job source accepted")
+	}
+	files, err := filepath.Glob(filepath.Join(store.root, "*.json"))
+	if err != nil || len(files) != 0 {
+		t.Fatalf("credential-bearing job persisted files: %v, %v", files, err)
 	}
 }
 

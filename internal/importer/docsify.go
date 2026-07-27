@@ -87,7 +87,7 @@ func ImportDocsify(ctx context.Context, name, version, source string, options Op
 		return Result{}, errors.New("Docsify import requires API name and version")
 	}
 	shellURL, err := url.Parse(strings.TrimSpace(source))
-	if err != nil || shellURL.Host == "" || shellURL.Scheme != "http" && shellURL.Scheme != "https" {
+	if err != nil || shellURL.Host == "" || shellURL.User != nil || shellURL.Scheme != "http" && shellURL.Scheme != "https" {
 		return Result{}, errors.New("Docsify import source must be an HTTP(S) URL")
 	}
 	reader := newSourceReader(options)

@@ -72,7 +72,7 @@ func runStart(args []string, stdout, stderr io.Writer) int {
 	}
 	source := strings.TrimSpace(flags.Arg(0))
 	parsed, err := url.Parse(source)
-	if err != nil || parsed.Host == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Scheme != "http" && parsed.Scheme != "https" {
 		fmt.Fprintln(stderr, "ingest: source must be an HTTP(S) URL")
 		return 2
 	}

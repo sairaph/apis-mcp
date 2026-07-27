@@ -97,7 +97,7 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		return Result{}, errors.New("HTML import requires API name and version")
 	}
 	start, err := url.Parse(strings.TrimSpace(source))
-	if err != nil || start.Host == "" || start.Scheme != "http" && start.Scheme != "https" {
+	if err != nil || start.Host == "" || start.User != nil || start.Scheme != "http" && start.Scheme != "https" {
 		return Result{}, errors.New("HTML import source must be an HTTP(S) URL")
 	}
 	start.Fragment = ""
@@ -111,7 +111,7 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 	client := *options.HTTPClient
 	previousRedirectPolicy := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if !sameOrigin(start, request.URL) || options.HTMLScope == "path" && !withinDocumentationPath(request.URL.Path, scopePath) {
+		if request.URL.User != nil || !sameOrigin(start, request.URL) || options.HTMLScope == "path" && !withinDocumentationPath(request.URL.Path, scopePath) {
 			return errors.New("HTML crawl redirect crosses the source origin")
 		}
 		if finiteInventory != nil {
@@ -342,6 +342,33 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 						}
 					}
 				}
+			case rootFramework == "mdbook":
+				var tocURL *url.URL
+				if pageURL.RawQuery != "" {
+					inventoryErr = errors.New("mdBook starting URL must not contain a query")
+				} else {
+					siteRoot, tocURL, inventoryErr = mdbookSiteRoot(document, pageURL)
+				}
+				var firstChapter string
+				if inventoryErr == nil {
+					scopePath = siteRoot
+					inventory, firstChapter, inventoryErr = mdbookTOCInventory(ctx, pageURL, siteRoot, tocURL, reader)
+				}
+				if inventoryErr == nil {
+					canonicalStart, canonicalErr := mkdocsInventoryURL(provenance)
+					if canonicalErr == nil && !containsString(inventory, canonicalStart) {
+						alias, aliasErr := mdbookStartInventoryAlias(pageURL, siteRoot, firstChapter)
+						if aliasErr == nil {
+							aliasErr = validateMDBookStartAlias(ctx, document, view, pageURL, alias, reader)
+						}
+						if aliasErr == nil {
+							inventoryAliases[canonicalStart] = alias
+							inventoryIdentity = alias
+						} else {
+							inventoryErr = aliasErr
+						}
+					}
+				}
 			}
 			if inventoryErr != nil {
 				return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, inventoryErr)
@@ -374,8 +401,19 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				return Result{}, fmt.Errorf("astro-starlight crawl did not complete: page %s has an invalid canonical URL", provenance)
 			}
 		}
+		if rootFramework == "mdbook" {
+			pageRoot, _, rootErr := mdbookSiteRoot(document, pageURL)
+			if rootErr != nil || pageRoot != scopePath {
+				return Result{}, fmt.Errorf("mdbook crawl did not complete: page %s has an inconsistent book root", provenance)
+			}
+		}
 		title, markdown := htmlToMarkdown(view.content, pageURL, view.includeHeader)
-		if (rootFramework == "vitepress" || rootFramework == "nextra" || rootFramework == "astro-starlight") && strings.TrimSpace(markdown) == "" {
+		if rootFramework == "mdbook" {
+			if mdbookTitle := mdbookPageTitle(document); mdbookTitle != "" {
+				title = mdbookTitle
+			}
+		}
+		if (rootFramework == "vitepress" || rootFramework == "nextra" || rootFramework == "astro-starlight" || rootFramework == "mdbook") && strings.TrimSpace(markdown) == "" {
 			return Result{}, fmt.Errorf("%s crawl did not complete: page has no statically rendered content: %s", rootFramework, provenance)
 		}
 		if title == "" {
@@ -745,6 +783,17 @@ func inspectHTMLDocument(root *htmlNode) htmlDocumentView {
 		if view.content == nil || firstHTMLTag(view.content, "h1") == nil || firstHTMLClass(view.content, "sl-markdown-content") == nil {
 			view.profileError = errors.New("Astro Starlight page has no supported statically rendered content container")
 		}
+	case "mdbook":
+		container := firstHTMLAttribute(root, "id", "mdbook-content")
+		if container != nil {
+			view.content = firstHTMLChild(container, "main")
+		} else {
+			view.content = nil
+		}
+		view.linkRoots = nil
+		if view.content == nil {
+			view.profileError = errors.New("mdBook page has no supported main content container")
+		}
 	}
 	return view
 }
@@ -787,6 +836,9 @@ func detectHTMLFramework(root *htmlNode) string {
 	if framework == "" && looksLikeSphinx(root) {
 		framework = "sphinx"
 	}
+	if framework == "" && looksLikeMDBook(root) {
+		framework = "mdbook"
+	}
 	if framework == "" && looksLikeNextra(root) {
 		framework = "nextra"
 	}
@@ -825,6 +877,21 @@ func looksLikeSphinx(root *htmlNode) bool {
 		return false
 	}
 	return htmlAssetSuffix(root, "script", "src", "_static/documentation_options.js") && htmlAssetSuffix(root, "script", "src", "_static/doctools.js")
+}
+
+func looksLikeMDBook(root *htmlNode) bool {
+	generated := false
+	walkHTML(root, func(node *htmlNode) {
+		if node.tag == "#comment" && strings.TrimSpace(node.text) == "Book generated using mdBook" {
+			generated = true
+		}
+	})
+	if !generated {
+		return false
+	}
+	content := firstHTMLAttribute(root, "id", "mdbook-content")
+	sidebar := firstHTMLAttribute(root, "id", "mdbook-sidebar")
+	return content != nil && firstHTMLChild(content, "main") != nil && sidebar != nil
 }
 
 func looksLikeNextra(root *htmlNode) bool {
@@ -1471,6 +1538,244 @@ func mkdocsInventoryURL(value string) (string, error) {
 	return canonicalHTTPURL(parsed.String())
 }
 
+func mdbookSiteRoot(document *htmlNode, pageURL *url.URL) (string, *url.URL, error) {
+	candidates := make(map[string]*url.URL)
+	add := func(linked *url.URL) {
+		if linked == nil || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || linked.Fragment != "" {
+			return
+		}
+		linked.RawPath = ""
+		linked.Path = path.Join(path.Dir(linked.Path), "toc.html")
+		candidates[linked.String()] = linked
+	}
+	walkHTML(document, func(node *htmlNode) {
+		if node.tag == "iframe" && hasHTMLClass(node, "sidebar-iframe-outer") && htmlAncestorAttribute(node, "id", "mdbook-sidebar") {
+			linked, err := pageURL.Parse(strings.TrimSpace(node.attrs["src"]))
+			if err == nil && strings.EqualFold(path.Base(linked.Path), "toc.html") {
+				add(linked)
+			}
+		}
+		if node.tag == "script" && htmlAncestorTag(node, "head") {
+			linked, err := pageURL.Parse(strings.TrimSpace(node.attrs["src"]))
+			if err == nil {
+				base := strings.ToLower(path.Base(linked.Path))
+				if base == "toc.js" || strings.HasPrefix(base, "toc-") && strings.HasSuffix(base, ".js") {
+					add(linked)
+				}
+			}
+		}
+		if node.tag == "noscript" && htmlAncestorAttribute(node, "id", "mdbook-sidebar") {
+			fragment, err := parseHTML([]byte("<!doctype html><html><body>" + htmlNodeText(node) + "</body></html>"))
+			if err == nil {
+				for _, iframe := range htmlClasses(fragment, "sidebar-iframe-outer") {
+					if iframe.tag != "iframe" {
+						continue
+					}
+					linked, parseErr := pageURL.Parse(strings.TrimSpace(iframe.attrs["src"]))
+					if parseErr == nil && strings.EqualFold(path.Base(linked.Path), "toc.html") {
+						add(linked)
+					}
+				}
+			}
+		}
+	})
+	if len(candidates) != 1 {
+		return "", nil, errors.New("mdBook page has no unique same-origin TOC asset")
+	}
+	var tocURL *url.URL
+	for _, candidate := range candidates {
+		tocURL = candidate
+	}
+	siteRoot := normalizeDocumentationRoot(path.Dir(tocURL.Path))
+	if !withinDocumentationPath(pageURL.Path, siteRoot) || tocURL.Path != path.Join(siteRoot, "toc.html") {
+		return "", nil, errors.New("mdBook toc.html does not define a valid book root")
+	}
+	return siteRoot, tocURL, nil
+}
+
+func mdbookTOCInventory(ctx context.Context, pageURL *url.URL, siteRoot string, tocURL *url.URL, reader *sourceReader) ([]string, string, error) {
+	raw, provenance, err := reader.read(ctx, tocURL.String(), nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("fetch mdBook TOC %s: %w", tocURL, err)
+	}
+	resolved, err := url.Parse(provenance)
+	if err != nil || !sameOrigin(pageURL, resolved) || resolved.Path != tocURL.Path || resolved.RawQuery != "" {
+		return nil, "", errors.New("mdBook TOC redirected outside its expected URL")
+	}
+	document, err := parseHTML(raw)
+	if err != nil || !isHTMLDocument(document) {
+		return nil, "", errors.New("mdBook TOC is not a static HTML document")
+	}
+	body := firstHTMLTag(document, "body")
+	var chapters []*htmlNode
+	if body != nil {
+		for _, candidate := range htmlClasses(body, "chapter") {
+			if candidate.tag == "ol" {
+				chapters = append(chapters, candidate)
+			}
+		}
+	}
+	if body == nil || !hasHTMLClass(body, "sidebar-iframe-inner") || len(chapters) != 1 {
+		return nil, "", errors.New("mdBook TOC has no supported chapter inventory")
+	}
+	chapter := chapters[0]
+	seen := make(map[string]bool)
+	var urls []string
+	firstChapter := ""
+	var inventoryErr error
+	walkHTML(chapter, func(node *htmlNode) {
+		if inventoryErr != nil || node.tag != "a" {
+			return
+		}
+		href := strings.TrimSpace(node.attrs["href"])
+		if href == "" {
+			if !hasHTMLClass(node, "chapter-fold-toggle") {
+				inventoryErr = errors.New("mdBook TOC contains a chapter anchor without a URL")
+			}
+			return
+		}
+		linked, parseErr := resolved.Parse(href)
+		if parseErr != nil || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || linked.Fragment != "" || !withinDocumentationPath(linked.Path, siteRoot) || !strings.EqualFold(path.Ext(linked.Path), ".html") {
+			inventoryErr = fmt.Errorf("mdBook TOC contains invalid chapter URL %q", node.attrs["href"])
+			return
+		}
+		canonical, canonicalErr := canonicalHTTPURL(linked.String())
+		if canonicalErr != nil {
+			inventoryErr = fmt.Errorf("mdBook TOC contains invalid chapter URL %q", node.attrs["href"])
+			return
+		}
+		if seen[canonical] {
+			inventoryErr = fmt.Errorf("mdBook TOC repeats chapter URL %s", canonical)
+			return
+		}
+		seen[canonical] = true
+		if firstChapter == "" {
+			firstChapter = canonical
+		}
+		urls = append(urls, canonical)
+	})
+	if inventoryErr != nil {
+		return nil, "", inventoryErr
+	}
+	if len(urls) == 0 {
+		return nil, "", errors.New("mdBook TOC contains no chapter URLs")
+	}
+	if len(urls) > maxHTMLSitemapURLs {
+		return nil, "", fmt.Errorf("mdBook TOC exceeds %d chapters", maxHTMLSitemapURLs)
+	}
+	sort.Strings(urls)
+	return urls, firstChapter, nil
+}
+
+func mdbookStartInventoryAlias(pageURL *url.URL, siteRoot, firstChapter string) (string, error) {
+	start := *pageURL
+	start.RawPath = ""
+	if start.RawQuery != "" {
+		return "", errors.New("mdBook starting page must not contain a query")
+	}
+	start.Fragment = ""
+	if start.Path != siteRoot && start.Path != path.Join(siteRoot, "index.html") {
+		return "", errors.New("mdBook starting page is not a book-root alias")
+	}
+	if firstChapter == "" {
+		return "", errors.New("mdBook TOC has no first chapter")
+	}
+	return firstChapter, nil
+}
+
+func mdbookPageTitle(document *htmlNode) string {
+	titleNode := firstHTMLTag(document, "title")
+	if titleNode == nil {
+		return ""
+	}
+	title := cleanInline(htmlNodeText(titleNode))
+	if title == "" {
+		return ""
+	}
+	if menu := firstHTMLClass(document, "menu-title"); menu != nil {
+		bookTitle := cleanInline(htmlNodeText(menu))
+		if bookTitle != "" {
+			title = strings.TrimSuffix(title, " - "+bookTitle)
+		}
+	}
+	return strings.TrimSpace(title)
+}
+
+func validateMDBookStartAlias(ctx context.Context, startDocument *htmlNode, startView htmlDocumentView, pageURL *url.URL, target string, reader *sourceReader) error {
+	raw, provenance, err := reader.read(ctx, target, nil)
+	if err != nil {
+		return fmt.Errorf("fetch mdBook first chapter alias %s: %w", target, err)
+	}
+	canonical, err := canonicalHTTPURL(provenance)
+	if err != nil || canonical != target {
+		return errors.New("mdBook first chapter alias redirected outside its TOC identity")
+	}
+	document, err := parseHTML(raw)
+	if err != nil || !isHTMLDocument(document) {
+		return errors.New("mdBook first chapter alias is not static HTML")
+	}
+	view := inspectHTMLDocument(document)
+	if view.framework != "mdbook" || view.profileError != nil {
+		return errors.New("mdBook first chapter alias is not a supported mdBook page")
+	}
+	aliasURL, err := url.Parse(provenance)
+	if err != nil {
+		return errors.New("mdBook first chapter alias has an invalid URL")
+	}
+	startRoot, _, startRootErr := mdbookSiteRoot(startDocument, pageURL)
+	aliasRoot, _, aliasRootErr := mdbookSiteRoot(document, aliasURL)
+	if startRootErr != nil || aliasRootErr != nil || startRoot != aliasRoot {
+		return errors.New("mdBook first chapter alias has an inconsistent book root")
+	}
+	startTitle, _ := htmlToMarkdown(startView.content, pageURL, startView.includeHeader)
+	aliasTitle, _ := htmlToMarkdown(view.content, aliasURL, view.includeHeader)
+	if title := mdbookPageTitle(startDocument); title != "" {
+		startTitle = title
+	}
+	if title := mdbookPageTitle(document); title != "" {
+		aliasTitle = title
+	}
+	if startTitle != aliasTitle || mdbookContentSignature(startView.content, pageURL) != mdbookContentSignature(view.content, aliasURL) {
+		return errors.New("mdBook root content does not match its first TOC chapter")
+	}
+	return nil
+}
+
+func mdbookContentSignature(root *htmlNode, base *url.URL) string {
+	var output strings.Builder
+	var render func(*htmlNode)
+	render = func(node *htmlNode) {
+		if node.tag == "" {
+			fmt.Fprintf(&output, "%d:%s", len(node.text), node.text)
+			return
+		}
+		output.WriteByte('<')
+		output.WriteString(node.tag)
+		for _, key := range sortedKeys(node.attrs) {
+			value := node.attrs[key]
+			if key == "href" || key == "src" {
+				if resolved, err := base.Parse(strings.TrimSpace(value)); err == nil {
+					if sameOrigin(base, resolved) && resolved.Path == base.Path {
+						value = "self:" + resolved.RawQuery + "#" + resolved.Fragment
+					} else {
+						value = resolved.String()
+					}
+				}
+			}
+			fmt.Fprintf(&output, " %s=%d:%s", key, len(value), value)
+		}
+		output.WriteByte('>')
+		for _, child := range node.children {
+			render(child)
+		}
+		output.WriteString("</")
+		output.WriteString(node.tag)
+		output.WriteByte('>')
+	}
+	render(root)
+	return output.String()
+}
+
 func sphinxSite(ctx context.Context, document *htmlNode, pageURL *url.URL, reader *sourceReader) (string, sphinxRuntime, error) {
 	assetURL := htmlAssetURL(document, pageURL, "script", "src", "_static/documentation_options.js")
 	if assetURL == nil || !sameOrigin(pageURL, assetURL) {
@@ -1711,7 +2016,7 @@ func isMkDocsFramework(framework string) bool {
 }
 
 func isFiniteInventoryFramework(framework string) bool {
-	return isMkDocsFramework(framework) || framework == "sphinx" || framework == "vitepress" || framework == "nextra" || framework == "astro-starlight"
+	return isMkDocsFramework(framework) || framework == "sphinx" || framework == "vitepress" || framework == "nextra" || framework == "astro-starlight" || framework == "mdbook"
 }
 
 func containsString(values []string, wanted string) bool {
@@ -1781,6 +2086,24 @@ func firstHTMLAttributePresent(root *htmlNode, attribute string) *htmlNode {
 	return found
 }
 
+func htmlAncestorTag(node *htmlNode, tag string) bool {
+	for current := node.parent; current != nil; current = current.parent {
+		if current.tag == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func htmlAncestorAttribute(node *htmlNode, attribute, value string) bool {
+	for current := node.parent; current != nil; current = current.parent {
+		if strings.EqualFold(strings.TrimSpace(current.attrs[attribute]), value) {
+			return true
+		}
+	}
+	return false
+}
+
 func firstHTMLClassPrefix(root *htmlNode, prefix string) *htmlNode {
 	var found *htmlNode
 	walkHTML(root, func(node *htmlNode) {
@@ -1820,7 +2143,7 @@ func htmlToMarkdown(root *htmlNode, base *url.URL, includeHeader bool) (string, 
 	title := ""
 	walkHTML(root, func(node *htmlNode) {
 		if title == "" && node.tag == "h1" {
-			title = renderHTMLInline(node, base, nil)
+			title = htmlHeadingTitle(node)
 		}
 		if title == "" && node.tag == "title" {
 			title = cleanInline(htmlNodeText(node))
@@ -1838,6 +2161,28 @@ func htmlToMarkdown(root *htmlNode, base *url.URL, includeHeader bool) (string, 
 		}
 	}
 	return title, markdown
+}
+
+func htmlHeadingTitle(node *htmlNode) string {
+	var output strings.Builder
+	var render func(*htmlNode)
+	render = func(current *htmlNode) {
+		if htmlNodeHidden(current) || skippedHTMLTag(current.tag) {
+			return
+		}
+		if current.tag == "a" && (hasHTMLClass(current, "hash-link") || hasHTMLClass(current, "headerlink") || hasHTMLClass(current, "header-anchor") || hasHTMLClass(current, "sl-anchor-link")) {
+			return
+		}
+		if current.tag == "" {
+			output.WriteString(current.text)
+			return
+		}
+		for _, child := range current.children {
+			render(child)
+		}
+	}
+	render(node)
+	return cleanInline(output.String())
 }
 
 func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL, includeHeader bool) {
@@ -1871,13 +2216,36 @@ func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL, in
 		if strings.TrimSpace(code) == "" {
 			return
 		}
-		writeMarkdownBlock(output, "```"+language+"\n"+code+"\n```")
+		fence := markdownCodeFence(code)
+		writeMarkdownBlock(output, fence+language+"\n"+code+"\n"+fence)
 		return
 	case "ul", "ol":
 		writeMarkdownBlock(output, renderHTMLList(node, base, 0))
 		return
 	case "table":
 		writeMarkdownBlock(output, renderHTMLTable(node, base))
+		return
+	case "blockquote":
+		var quoted strings.Builder
+		for _, child := range node.children {
+			renderHTMLBlocks(&quoted, child, base, includeHeader)
+		}
+		content := cleanMarkdown(quoted.String())
+		if content == "" {
+			return
+		}
+		lines := strings.Split(content, "\n")
+		for index := range lines {
+			if lines[index] == "" {
+				lines[index] = ">"
+			} else {
+				lines[index] = "> " + lines[index]
+			}
+		}
+		writeMarkdownBlock(output, strings.Join(lines, "\n"))
+		return
+	case "hr":
+		writeMarkdownBlock(output, "---")
 		return
 	case "a":
 		if htmlHasBlockChild(node) {
@@ -1904,6 +2272,9 @@ func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL, in
 			return
 		}
 		writeMarkdownBlock(output, "**"+renderHTMLInline(node, base, nil)+"**")
+		return
+	case "dd", "figcaption", "caption":
+		writeMarkdownBlock(output, renderHTMLInline(node, base, nil))
 		return
 	case "aside":
 		if semanticAside {
@@ -1968,6 +2339,23 @@ func markdownCodeSpan(value string) string {
 	return fence + value + fence
 }
 
+func markdownCodeFence(value string) string {
+	longest := 0
+	for index := 0; index < len(value); {
+		if value[index] != '`' {
+			index++
+			continue
+		}
+		end := index
+		for end < len(value) && value[end] == '`' {
+			end++
+		}
+		longest = max(longest, end-index)
+		index = end
+	}
+	return strings.Repeat("`", max(3, longest+1))
+}
+
 func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool) string {
 	var output strings.Builder
 	var render func(*htmlNode)
@@ -1976,7 +2364,7 @@ func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool
 			return
 		}
 		if current.tag == "" {
-			output.WriteString(current.text)
+			output.WriteString(escapeMarkdownText(current.text))
 			return
 		}
 		switch current.tag {
@@ -1984,9 +2372,7 @@ func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool
 			output.WriteString("  \n")
 			return
 		case "code":
-			output.WriteByte('`')
-			output.WriteString(strings.ReplaceAll(cleanInline(htmlNodeText(current)), "`", "\\`"))
-			output.WriteByte('`')
+			output.WriteString(markdownCodeSpan(cleanInline(htmlNodeText(current))))
 			return
 		case "strong", "b":
 			output.WriteString("**")
@@ -2006,25 +2392,42 @@ func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool
 			if hasHTMLClass(current, "hash-link") || hasHTMLClass(current, "headerlink") || hasHTMLClass(current, "header-anchor") || hasHTMLClass(current, "sl-anchor-link") {
 				return
 			}
-			if hasHTMLClass(current, "toclink") {
+			mdbookHeader := hasHTMLClass(current, "header") && current.parent != nil && len(current.parent.tag) == 2 && current.parent.tag[0] == 'h' && current.parent.tag[1] >= '1' && current.parent.tag[1] <= '6'
+			if hasHTMLClass(current, "toclink") || mdbookHeader {
 				for _, child := range current.children {
 					render(child)
 				}
 				return
 			}
-			label := cleanInline(htmlNodeText(current))
+			label := escapeMarkdownText(cleanInline(htmlNodeText(current)))
 			target := resolveHTMLReference(current.attrs["href"], base)
 			if label != "" && target != "" {
 				fmt.Fprintf(&output, "[%s](%s)", label, target)
 				return
 			}
 		case "img":
-			label := cleanInline(current.attrs["alt"])
+			label := escapeMarkdownText(cleanInline(current.attrs["alt"]))
 			target := resolveHTMLReference(current.attrs["src"], base)
 			if label != "" && target != "" {
 				fmt.Fprintf(&output, "![%s](%s)", label, target)
 			}
 			return
+		case "input":
+			if strings.EqualFold(current.attrs["type"], "checkbox") {
+				if _, checked := current.attrs["checked"]; checked {
+					output.WriteString("[x] ")
+				} else {
+					output.WriteString("[ ] ")
+				}
+			}
+			return
+		case "label":
+			if hasHTMLClass(current, "checkbox-label") {
+				if image := firstHTMLTag(current, "img"); image != nil {
+					render(image)
+				}
+				return
+			}
 		}
 		for _, child := range current.children {
 			render(child)
@@ -2174,6 +2577,20 @@ func cleanInline(value string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(value), " "))
 }
 
+func escapeMarkdownText(value string) string {
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`*`, `\*`,
+		`_`, `\_`,
+		`[`, `\[`,
+		`]`, `\]`,
+		`#`, `\#`,
+		`<`, `\<`,
+		`>`, `\>`,
+	)
+	return replacer.Replace(value)
+}
+
 func htmlNodeText(node *htmlNode) string {
 	if node.tag == "" {
 		return node.text
@@ -2210,7 +2627,7 @@ func htmlNodeHidden(node *htmlNode) bool {
 	starlightBanner := pagefindIgnored && hasHTMLClass(node, "sl-banner")
 	starlightPromotion := algoliaExcluded && node.parent != nil && hasHTMLClass(node.parent, "hide-when-toc-is-visible")
 	starlightMobileDuplicate := hasHTMLClass(node, "mobile-only") && hasHTMLClass(node, "not-content") && node.parent != nil && hasHTMLClass(node.parent, "hero")
-	return hidden || starlightBanner || starlightPromotion || starlightMobileDuplicate
+	return hidden || hasHTMLClass(node, "hidden") || starlightBanner || starlightPromotion || starlightMobileDuplicate
 }
 
 func htmlHasBlockChild(node *htmlNode) bool {
@@ -2333,7 +2750,7 @@ func likelyHTMLPath(value string) bool {
 }
 
 func sameOrigin(first, second *url.URL) bool {
-	return strings.EqualFold(first.Scheme, second.Scheme) &&
+	return first.User == nil && second.User == nil && strings.EqualFold(first.Scheme, second.Scheme) &&
 		strings.EqualFold(first.Hostname(), second.Hostname()) && originPort(first) == originPort(second)
 }
 

@@ -160,6 +160,21 @@ func TestSourceReaderScopesGitHubToken(t *testing.T) {
 	}
 }
 
+func TestSourceReaderRejectsURLCredentialsBeforeRequest(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: docsifyRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		return docsifyTestResponse(request, http.StatusOK, `{}`), nil
+	})}
+	reader := newSourceReader(Options{HTTPClient: client, MaxSourceBytes: DefaultMaxSourceBytes, MaxTotalBytes: DefaultMaxTotalBytes})
+	if _, _, err := reader.read(context.Background(), "https://user:secret@docs.test/source", nil); err == nil {
+		t.Fatal("credential-bearing source accepted")
+	}
+	if requests != 0 {
+		t.Fatalf("credential-bearing source made %d requests", requests)
+	}
+}
+
 func TestDocsifyExtractsEncodedGitHubRef(t *testing.T) {
 	document, err := parseHTML([]byte(`<!doctype html><html><body><div id="app"></div><script>window.$docsify = {alias: {'/guide': 'https://raw.githubusercontent.com/example/docs/release%23one/guide.md'}, repo: 'https://github.com/example/docs/tree/release%23one/docs/'}</script><script src="docsify.min.js"></script></body></html>`))
 	if err != nil {

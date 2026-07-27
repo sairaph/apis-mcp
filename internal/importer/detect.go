@@ -23,7 +23,7 @@ func DetectURL(ctx context.Context, source string, options Options) (Detection, 
 		return Detection{}, err
 	}
 	parsed, err := url.Parse(strings.TrimSpace(source))
-	if err != nil || parsed.Host == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return Detection{}, errors.New("detection source must be an HTTP(S) URL")
 	}
 	raw, provenance, err := newSourceReader(options).read(ctx, parsed.String(), nil)

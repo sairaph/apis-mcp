@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -155,6 +156,10 @@ func validateJobID(id string) error {
 }
 
 func (store *jobStore) create(request ingestRequest) (ingestJob, error) {
+	source, err := url.Parse(strings.TrimSpace(request.Source))
+	if err != nil || source.Host == "" || source.User != nil || source.Scheme != "http" && source.Scheme != "https" {
+		return ingestJob{}, errors.New("job source must be a credential-free HTTP(S) URL")
+	}
 	id, err := uuid.NewV7()
 	if err != nil {
 		return ingestJob{}, err

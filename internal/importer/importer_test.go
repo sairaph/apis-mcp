@@ -1382,6 +1382,160 @@ func TestImportHTMLMapsSphinxLinkSuffixAlias(t *testing.T) {
 	}
 }
 
+func TestImportHTMLExhaustsMDBookTOC(t *testing.T) {
+	titleAliasRequests := 0
+	orphanRequests := 0
+	page := func(title, tocPath, body string) string {
+		tocScript := strings.TrimSuffix(tocPath, "toc.html") + "toc-fixture.js"
+		return `<!doctype html><html lang="en"><head><!-- Book generated using mdBook --><title>` + title + ` - Fixture Book</title><script src="` + tocScript + `"></script></head><body>` +
+			`<nav id="mdbook-sidebar"><mdbook-sidebar-scrollbox></mdbook-sidebar-scrollbox><noscript><iframe class="sidebar-iframe-outer" src="` + tocPath + `"></iframe></noscript></nav>` +
+			`<div id="mdbook-menu-bar"><h1 class="menu-title">Fixture Book</h1>Menu chrome</div><div id="mdbook-content"><main><h1><a class="header" href="#title">` + title + `</a></h1>` + body + `</main><nav class="nav-wrapper">Page navigation chrome</nav></div>` +
+			`<nav class="nav-wide-wrapper">Wide navigation chrome</nav></body></html>`
+	}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/book/":
+			fmt.Fprint(writer, page("Fixture Title", "toc.html", `<p>Root chapter content. <a href="#root">Self link</a>.</p>`))
+		case "/book/title-page.html":
+			titleAliasRequests++
+			fmt.Fprint(writer, page("Fixture Title", "toc.html", `<p>Root chapter content. <a href="#root">Self link</a>.</p>`))
+		case "/book/guide/start.html":
+			fmt.Fprint(writer, page("Guide Chapter", "../toc.html", `<p>Guide content uses ownership.</p><p class="hidden">Hidden mdBook content.</p><pre class="playground"><code class="language-rust edition2024"><span class="boring">fn main() {</span>
+println!("mdbook");
+<span class="boring">}</span></code></pre><pre><code class="language-markdown">&#96;&#96;&#96;rust
+fn nested() {}
+&#96;&#96;&#96;</code></pre><p>Inline <code>value&#96;tick</code>.</p><blockquote class="blockquote-tag blockquote-tag-warning"><p><strong>Warning</strong></p><p>Admonition content.</p></blockquote><dl><dt>Term</dt><dd>Definition <em>important</em>.</dd></dl><ul><li><input type="checkbox" checked>Finished task</li></ul><hr><figure><figcaption><a href="#figure">Figure 1</a>: Figure caption.</figcaption></figure><p># literal *stars* [brackets]</p><p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../image.svg" alt="Diagram"><span class="img-wrapper"><img src="../image.svg" alt="Diagram"></span></label></p>`))
+		case "/book/orphan.html":
+			orphanRequests++
+			fmt.Fprint(writer, page("TOC Only", "toc.html", `<p>Only the finite TOC advertises this chapter.</p>`))
+		case "/book/toc.html":
+			fmt.Fprint(writer, `<!doctype html><html><body class="sidebar-iframe-inner"><ol class="chapter"><li class="chapter-item"><a href="title-page.html" target="_parent"><strong aria-hidden="true">1.</strong> Title</a></li><li class="part-title">Part</li><li class="chapter-item"><a href="guide/start.html" target="_parent">Guide</a></li><li class="chapter-item"><span>Draft chapter</span></li><li class="chapter-item"><a href="orphan.html" target="_parent">Orphan</a></li></ol></body></html>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	options := importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, index), HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	}
+	detection, err := importer.DetectURL(context.Background(), server.URL+"/book/", options)
+	if err != nil || detection.Engine != "html" || detection.Framework != "mdbook" {
+		t.Fatalf("mdBook detection: %+v, %v", detection, err)
+	}
+	result, err := importer.ImportHTML(context.Background(), "mdBook Fixture", "v1", server.URL+"/book/", options)
+	if err != nil || result.Framework != "mdbook" || result.Pages != 3 || result.Truncated || titleAliasRequests != 1 || orphanRequests != 1 {
+		t.Fatalf("mdBook import: %+v, title_alias=%d orphan=%d, %v", result, titleAliasRequests, orphanRequests, err)
+	}
+	var generated string
+	for _, name := range relativeFiles(t, result.Destination) {
+		if filepath.Ext(name) != ".md" || name == "_index.md" {
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(result.Destination, name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		generated += string(raw)
+	}
+	for _, wanted := range []string{"# Fixture Title", "Root chapter content.", "# Guide Chapter", "```rust\nfn main() {\nprintln!(\"mdbook\");\n}\n```", "````markdown\n```rust\nfn nested() {}\n```\n````", "Inline ``value`tick``.", "> **Warning**\n>\n> Admonition content.", "**Term**", "Definition *important*.", "[x] Finished task", "[Figure 1](" + server.URL + "/book/guide/start.html#figure): Figure caption.", `\# literal \*stars\* \[brackets\]`, "![Diagram](" + server.URL + "/book/image.svg)", "# TOC Only", "Only the finite TOC advertises this chapter."} {
+		if !strings.Contains(generated, wanted) {
+			t.Errorf("generated mdBook Markdown missing %q:\n%s", wanted, generated)
+		}
+	}
+	for _, excluded := range []string{"Menu chrome", "Page navigation chrome", "Wide navigation chrome", "Hidden mdBook content.", "[Fixture Title](", "[Guide Chapter]("} {
+		if strings.Contains(generated, excluded) {
+			t.Errorf("generated mdBook Markdown contains %q", excluded)
+		}
+	}
+	if count := strings.Count(generated, "![Diagram]("); count != 1 {
+		t.Errorf("mdBook zoom image count = %d, want 1", count)
+	}
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	search, err := snapshot.Search(context.Background(), library.SearchRequest{DocID: "mdbook-fixture-v1", Query: "ownership"})
+	if err != nil || search.Total == 0 {
+		t.Fatalf("indexed mdBook search: %+v, %v", search, err)
+	}
+}
+
+func TestImportHTMLMDBookFailsIncompleteTOC(t *testing.T) {
+	page := `<!doctype html><html><head><!-- Book generated using mdBook --><script src="toc-fixture.js"></script></head><body><nav id="mdbook-sidebar"><noscript><iframe class="sidebar-iframe-outer" src="toc.html"></iframe></noscript></nav><div id="mdbook-content"><main><h1><a class="header" href="#title">Title</a></h1><p>Content.</p></main></div></body></html>`
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/book/":
+			fmt.Fprint(writer, page)
+		case "/book/toc.html":
+			fmt.Fprint(writer, `<html><body class="sidebar-iframe-inner"><ol class="chapter"><li><a href="title-page.html">Title</a></li><li><a href="missing.html">Missing</a></li></ol></body></html>`)
+		case "/book/title-page.html":
+			fmt.Fprint(writer, page)
+		case "/book/missing.html":
+			http.Error(writer, "missing chapter", http.StatusServiceUnavailable)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	_, err := importer.ImportHTML(context.Background(), "Incomplete mdBook", "v1", server.URL+"/book/", importer.Options{
+		LibraryRoot: root, Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "mdbook crawl did not complete") || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("expected incomplete mdBook failure, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "incomplete-mdbook", "v1")); !os.IsNotExist(statErr) {
+		t.Fatalf("incomplete mdBook destination exists: %v", statErr)
+	}
+}
+
+func TestImportHTMLRejectsInvalidMDBookTOC(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		toc  string
+	}{
+		{name: "empty", toc: `<ol class="chapter"><li><span>Draft only</span></li></ol>`},
+		{name: "duplicate", toc: `<ol class="chapter"><li><a href="index.html">One</a></li><li><a href="index.html">Again</a></li></ol>`},
+		{name: "external", toc: `<ol class="chapter"><li><a href="https://outside.test/chapter.html">Outside</a></li></ol>`},
+		{name: "query", toc: `<ol class="chapter"><li><a href="index.html?variant=one">Variant</a></li></ol>`},
+		{name: "escape", toc: `<ol class="chapter"><li><a href="../escape.html">Escape</a></li></ol>`},
+		{name: "missing href", toc: `<ol class="chapter"><li><a href="index.html">Valid</a></li><li><a>Missing URL</a></li></ol>`},
+		{name: "multiple inventories", toc: `<ol class="chapter"><li><a href="index.html">One</a></li></ol><ol class="chapter"><li><a href="other.html">Two</a></li></ol>`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page := `<!doctype html><html><head><!-- Book generated using mdBook --><script src="toc-fixture.js"></script></head><body><nav id="mdbook-sidebar"></nav><div id="mdbook-content"><main><h1>Book</h1></main></div></body></html>`
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/book/":
+					fmt.Fprint(writer, page)
+				case "/book/toc.html":
+					fmt.Fprint(writer, `<!doctype html><html><body class="sidebar-iframe-inner">`+test.toc+`</body></html>`)
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			_, err := importer.ImportHTML(context.Background(), "Invalid mdBook", "v1-"+test.name, server.URL+"/book/", importer.Options{
+				LibraryRoot: t.TempDir(), Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+				HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+			})
+			if err == nil || !strings.Contains(err.Error(), "mdbook crawl did not complete") {
+				t.Fatalf("invalid mdBook TOC accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestImportHTMLExhaustsVitePressSitemap(t *testing.T) {
 	cleanStartRequests := 0
 	page := func(layout, title, body string) string {
