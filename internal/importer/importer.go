@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -79,6 +80,7 @@ type Result struct {
 	Source      string `json:"source"`
 	Destination string `json:"destination"`
 	Pages       int    `json:"pages"`
+	Sources     int    `json:"sources,omitempty"`
 	Truncated   bool   `json:"truncated,omitempty"`
 }
 
@@ -101,6 +103,7 @@ type manifest struct {
 	SourceRoot   string   `yaml:"source_root,omitempty"`
 	SourceType   string   `yaml:"source_type,omitempty"`
 	ImportedFrom string   `yaml:"imported_from,omitempty"`
+	Sources      int      `yaml:"sources,omitempty"`
 }
 
 type pageFront struct {
@@ -260,6 +263,10 @@ func newSourceReader(options Options) *sourceReader {
 }
 
 func (reader *sourceReader) read(ctx context.Context, source string, base *url.URL) ([]byte, string, error) {
+	return reader.readFromOrigin(ctx, source, base, "")
+}
+
+func (reader *sourceReader) readFromOrigin(ctx context.Context, source string, base *url.URL, allowedOrigin string) ([]byte, string, error) {
 	resolved, isHTTP, err := resolveSource(source, base)
 	if err != nil {
 		return nil, "", err
@@ -271,7 +278,25 @@ func (reader *sourceReader) read(ctx context.Context, source string, base *url.U
 			return nil, "", err
 		}
 		request.Header.Set("User-Agent", "apis-mcp-documentation-importer")
-		response, err := reader.client.Do(request)
+		client := reader.client
+		if allowedOrigin != "" {
+			clone := *reader.client
+			originalRedirect := clone.CheckRedirect
+			clone.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return errors.New("stopped after 10 redirects")
+				}
+				if httpOrigin(request.URL) != allowedOrigin {
+					return fmt.Errorf("redirect changes origin from %s to %s", allowedOrigin, httpOrigin(request.URL))
+				}
+				if originalRedirect != nil {
+					return originalRedirect(request, via)
+				}
+				return nil
+			}
+			client = &clone
+		}
+		response, err := client.Do(request)
 		if err != nil {
 			return nil, "", fmt.Errorf("fetch %s: %w", resolved, err)
 		}
@@ -297,6 +322,42 @@ func (reader *sourceReader) read(ctx context.Context, source string, base *url.U
 		return nil, "", fmt.Errorf("documentation import exceeds %d total source bytes", reader.total)
 	}
 	return raw, resolved, nil
+}
+
+func httpOrigin(parsed *url.URL) string {
+	if parsed == nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + normalizedHTTPHost(parsed)
+}
+
+func normalizedHTTPHost(parsed *url.URL) string {
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if (strings.EqualFold(parsed.Scheme, "http") && port == "80") || (strings.EqualFold(parsed.Scheme, "https") && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		return net.JoinHostPort(host, port)
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+func canonicalHTTPURL(value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid HTTP(S) URL %q", value)
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid HTTP(S) URL %q", value)
+	}
+	parsed.Host = normalizedHTTPHost(parsed)
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 func resolveSource(source string, base *url.URL) (string, bool, error) {

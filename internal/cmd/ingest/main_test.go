@@ -79,7 +79,7 @@ func TestWorkerIngestsAndIndexesOpenAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	recovered, err := store.get(job.ID)
-	if err != nil || recovered.State != jobSucceeded || recovered.Result == nil || recovered.Result.Kind != "openapi" {
+	if err != nil || recovered.State != jobSucceeded || recovered.Result == nil || recovered.Result.Kind != "openapi" || recovered.Result.Sources != 1 {
 		t.Fatalf("published job recovery: %+v, %v", recovered, err)
 	}
 }

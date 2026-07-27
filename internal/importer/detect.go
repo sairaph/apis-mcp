@@ -44,7 +44,7 @@ func DetectURL(ctx context.Context, source string, options Options) (Detection, 
 		return Detection{Engine: "html", Framework: framework, Format: "html", Source: provenance}, nil
 	}
 	base, err := url.Parse(provenance)
-	if err == nil && (len(openAPISpecCandidates(document, base)) > 0 || len(openAPIConfigScripts(document, base)) > 0) {
+	if err == nil && (len(openAPISpecCandidates(document, base)) > 0 || len(openAPIConfigScripts(document, base)) > 0 || len(rapidocCatalogRoots(document, base)) > 0 || hasRapiDocComponent(document)) {
 		return Detection{Engine: "openapi", Framework: detectOpenAPIHTMLFramework(document), Format: "html", Source: provenance}, nil
 	}
 	return Detection{Engine: "html", Framework: "unknown", Format: "html", Source: provenance}, nil

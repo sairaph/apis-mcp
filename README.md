@@ -138,7 +138,9 @@ go run -tags=dev ./internal/cmd/ingest start -out /tmp/apis-ingest \
 repeatable `-collections` flag accepts comma-separated collection IDs. The
 detached job defaults to unlimited pages and depth while staying under the
 starting documentation path. Use `-scope domain` to crawl the entire origin,
-or set optional `-max-pages` and `-max-depth` safeguards.
+or set optional `-max-pages` and `-max-depth` safeguards. Large finite API
+catalogs can raise the 16 MiB per-source and 64 MiB aggregate download limits
+with `-max-source-bytes` and `-max-total-bytes`.
 
 Control and subscribe to the persisted job from separate processes:
 

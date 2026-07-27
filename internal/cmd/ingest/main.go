@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+
+	"github.com/sairaph/apis-mcp/internal/importer"
 )
 
 func main() {
@@ -50,6 +52,7 @@ func runStart(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("start", stderr)
 	var name, version, output, scope string
 	var maxPages, maxDepth int
+	var maxSourceBytes, maxTotalBytes int64
 	var collections collectionFlag
 	flags.StringVar(&name, "name", "", "API name (defaults to the URL host)")
 	flags.StringVar(&version, "version", "latest", "API version")
@@ -57,6 +60,8 @@ func runStart(args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&scope, "scope", "path", "crawl scope: path or domain")
 	flags.IntVar(&maxPages, "max-pages", -1, "optional maximum HTML pages (-1 is unlimited)")
 	flags.IntVar(&maxDepth, "max-depth", -1, "optional maximum HTML link depth (-1 is unlimited)")
+	flags.Int64Var(&maxSourceBytes, "max-source-bytes", importer.DefaultMaxSourceBytes, "maximum bytes downloaded from one source")
+	flags.Int64Var(&maxTotalBytes, "max-total-bytes", importer.DefaultMaxTotalBytes, "maximum bytes downloaded across all sources")
 	flags.Var(&collections, "collections", "comma-separated collection IDs (repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -74,7 +79,7 @@ func runStart(args []string, stdout, stderr io.Writer) int {
 	if name == "" {
 		name = parsed.Hostname()
 	}
-	if name == "" || strings.TrimSpace(version) == "" || scope != "path" && scope != "domain" || maxPages == 0 || maxPages < -1 || maxDepth < -1 {
+	if name == "" || strings.TrimSpace(version) == "" || scope != "path" && scope != "domain" || maxPages == 0 || maxPages < -1 || maxDepth < -1 || maxSourceBytes < 1 || maxTotalBytes < maxSourceBytes {
 		fmt.Fprintln(stderr, "ingest: invalid name, version, scope, or crawl limit")
 		return 2
 	}
@@ -84,7 +89,7 @@ func runStart(args []string, stdout, stderr io.Writer) int {
 	}
 	job, err := startDetachedJob(store, ingestRequest{
 		Output: store.output, Source: source, Name: name, Version: version, Collections: collections,
-		Scope: scope, MaxPages: maxPages, MaxDepth: maxDepth,
+		Scope: scope, MaxPages: maxPages, MaxDepth: maxDepth, MaxSourceBytes: maxSourceBytes, MaxTotalBytes: maxTotalBytes,
 	})
 	if err != nil {
 		return reportError(stderr, err)

@@ -37,14 +37,16 @@ const (
 )
 
 type ingestRequest struct {
-	Output      string   `json:"output"`
-	Source      string   `json:"source"`
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Collections []string `json:"collections,omitempty"`
-	Scope       string   `json:"scope"`
-	MaxPages    int      `json:"max_pages"`
-	MaxDepth    int      `json:"max_depth"`
+	Output         string   `json:"output"`
+	Source         string   `json:"source"`
+	Name           string   `json:"name"`
+	Version        string   `json:"version"`
+	Collections    []string `json:"collections,omitempty"`
+	Scope          string   `json:"scope"`
+	MaxPages       int      `json:"max_pages"`
+	MaxDepth       int      `json:"max_depth"`
+	MaxSourceBytes int64    `json:"max_source_bytes,omitempty"`
+	MaxTotalBytes  int64    `json:"max_total_bytes,omitempty"`
 }
 
 type ingestJob struct {
@@ -399,6 +401,7 @@ func (store *jobStore) recoverOwnedPublication(job ingestJob) (ingestJob, bool) 
 	type manifest struct {
 		SourceRoot string `yaml:"source_root"`
 		SourceType string `yaml:"source_type"`
+		Sources    int    `yaml:"sources"`
 	}
 	var metadata manifest
 	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
@@ -438,7 +441,7 @@ func (store *jobStore) recoverOwnedPublication(job ingestJob) (ingestJob, bool) 
 	}
 	result := importer.Result{
 		Kind: metadata.SourceType, Framework: framework, Name: job.Request.Name, Version: job.Request.Version,
-		Source: metadata.SourceRoot, Destination: destination, Pages: pages, Truncated: job.Truncated,
+		Source: metadata.SourceRoot, Destination: destination, Pages: pages, Sources: metadata.Sources, Truncated: job.Truncated,
 	}
 	recovered, err := store.update(job.ID, "succeeded", "recovered owned publication", &importer.Progress{
 		Stage: "succeeded", URL: result.Source, Framework: framework, Pages: pages,
@@ -612,6 +615,7 @@ func runWorker(ctx context.Context, store *jobStore, id string, client *http.Cli
 	options := importer.Options{
 		LibraryRoot: job.Request.Output, HTTPClient: client, Collections: job.Request.Collections, JobID: id,
 		HTMLScope: job.Request.Scope, HTMLLimitsSet: true, MaxHTMLPages: job.Request.MaxPages, MaxHTMLDepth: job.Request.MaxDepth, Progress: progress,
+		MaxSourceBytes: job.Request.MaxSourceBytes, MaxTotalBytes: job.Request.MaxTotalBytes,
 		Rebuild: func(rebuildCtx context.Context) error {
 			progress(importer.Progress{Stage: "indexing", Pages: latestPages})
 			return library.Rebuild(rebuildCtx, library.Options{UserRoot: job.Request.Output, IndexPath: indexPath})

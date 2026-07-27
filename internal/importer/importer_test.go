@@ -396,6 +396,200 @@ window.ui = SwaggerUIBundle({
 	}
 }
 
+func TestImportOpenAPIDiscoversAllStaticRapiDocSpecifications(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/docs/":
+			fmt.Fprint(writer, `<html><body><rapi-doc spec-url="./pets.json"></rapi-doc><rapi-doc-mini spec-url="./orders.json"></rapi-doc-mini></body></html>`)
+		case "/docs/pets.json":
+			fmt.Fprint(writer, `{"openapi":"3.0.3","info":{"title":"Pets","version":"v1"},"paths":{"/pets":{"get":{"responses":{"200":{"description":"ok"}}}}}}`)
+		case "/docs/orders.json":
+			fmt.Fprint(writer, `{"swagger":"2.0","info":{"title":"Orders","version":"v1"},"paths":{"/orders":{"post":{"responses":{"200":{"description":"ok"}}}}}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	result, err := importer.ImportOpenAPI(context.Background(), "RapiDoc APIs", "live", server.URL+"/docs/", importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, index), HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != "openapi-catalog" || result.Framework != "rapidoc" || result.Sources != 2 || result.Pages != 5 || result.Source != server.URL+"/docs/" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	for _, relative := range []string{
+		"apis/docs/orders/operations/untagged", "apis/docs/pets/operations/untagged",
+	} {
+		files, globErr := filepath.Glob(filepath.Join(result.Destination, relative, "*.md"))
+		if globErr != nil || len(files) != 1 {
+			t.Fatalf("generated %s: %v, %v", relative, files, globErr)
+		}
+	}
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	search, err := snapshot.Search(context.Background(), library.SearchRequest{DocID: "rapidoc-apis-live", Query: "orders"})
+	if err != nil || search.Total == 0 {
+		t.Fatalf("indexed catalog search: %+v, %v", search, err)
+	}
+}
+
+func TestImportOpenAPIExpandsOVHRapiDocCatalogs(t *testing.T) {
+	requested := make(map[string]int)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requested[request.URL.Path+"?"+request.URL.RawQuery]++
+		switch request.URL.Path {
+		case "/console/":
+			fmt.Fprintf(writer, `<html><body><rapi-doc spec-url="" spec-roots="%s/v1,%s/v2"></rapi-doc></body></html>`, server.URL, server.URL)
+		case "/v1":
+			fmt.Fprintf(writer, `{"apis":[{"path":"/pets","schema":"{path}.{format}","format":["json","yaml"]},{"path":"/products","schema":"{path}.{format}","format":["json"]}],"basePath":%q}`, server.URL+"/v1")
+		case "/v2":
+			fmt.Fprintf(writer, `{"apis":[{"path":"/pets","schema":"{path}.{format}","format":["json"]}],"basePath":%q}`, server.URL+"/v2")
+		case "/v1/pets.json", "/v2/pets.json":
+			if request.URL.Query().Get("format") != "openapi3" {
+				http.Error(writer, "missing OpenAPI format", http.StatusBadRequest)
+				return
+			}
+			fmt.Fprintf(writer, `{"openapi":"3.0.3","info":{"title":"OVH Pets","version":"1.0"},"paths":{"/pets":{"get":{"summary":%q,"responses":{"200":{"description":"ok"}}}}},"components":{"schemas":{"Pet":{"type":"object"}}}}`, request.URL.Path)
+		case "/v1/products.json":
+			fmt.Fprint(writer, `{"openapi":"3.0.3","info":{"title":"OVH Products","version":"1.0"},"paths":{}}`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	detection, err := importer.DetectURL(context.Background(), server.URL+"/console/", importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, index), HTTPClient: server.Client(),
+	})
+	if err != nil || detection.Engine != "openapi" || detection.Framework != "rapidoc" {
+		t.Fatalf("catalog detection: %+v, %v", detection, err)
+	}
+	result, err := importer.ImportOpenAPI(context.Background(), "OVHcloud API", "live", server.URL+"/console/", importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, index), HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind != "openapi-catalog" || result.Sources != 3 || result.Pages != 8 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	for _, relative := range []string{
+		"apis/v1/pets/operations/untagged", "apis/v1/pets/schemas",
+		"apis/v2/pets/operations/untagged", "apis/v2/pets/schemas",
+	} {
+		files, globErr := filepath.Glob(filepath.Join(result.Destination, relative, "*.md"))
+		if globErr != nil || len(files) != 1 {
+			t.Fatalf("generated %s: %v, %v", relative, files, globErr)
+		}
+	}
+	if requested["/v1/pets.json?format=openapi3"] != 1 || requested["/v1/products.json?format=openapi3"] != 1 || requested["/v2/pets.json?format=openapi3"] != 1 {
+		t.Fatalf("catalog schema requests: %+v", requested)
+	}
+}
+
+func TestImportOpenAPICatalogFailurePublishesNothing(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/console/":
+			fmt.Fprintf(writer, `<html><body><rapi-doc spec-roots="%s/v1"></rapi-doc></body></html>`, server.URL)
+		case "/v1":
+			fmt.Fprintf(writer, `{"apis":[{"path":"/first","schema":"{path}.{format}","format":["json"]},{"path":"/missing","schema":"{path}.{format}","format":["json"]}],"basePath":%q}`, server.URL+"/v1")
+		case "/v1/first.json":
+			fmt.Fprint(writer, `{"openapi":"3.0.3","info":{"title":"First","version":"v1"},"paths":{"/first":{"get":{"responses":{"200":{"description":"ok"}}}}}}`)
+		case "/v1/missing.json":
+			http.Error(writer, "unavailable", http.StatusServiceUnavailable)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	rebuilds := 0
+	_, err := importer.ImportOpenAPI(context.Background(), "Incomplete Catalog", "live", server.URL+"/console/", importer.Options{
+		LibraryRoot: root, HTTPClient: server.Client(), Rebuild: func(context.Context) error { rebuilds++; return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing") || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("expected catalog failure, got %v", err)
+	}
+	if rebuilds != 0 {
+		t.Fatalf("failed catalog rebuilt index %d times", rebuilds)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "incomplete-catalog", "live")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed catalog destination exists: %v", statErr)
+	}
+}
+
+func TestImportOpenAPICatalogRejectsCrossOriginRedirect(t *testing.T) {
+	externalRequests := 0
+	external := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		externalRequests++
+		fmt.Fprint(writer, `{"openapi":"3.0.3","paths":{}}`)
+	}))
+	defer external.Close()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/console/":
+			fmt.Fprintf(writer, `<html><body><rapi-doc spec-roots="%s/v1"></rapi-doc></body></html>`, server.URL)
+		case "/v1":
+			fmt.Fprintf(writer, `{"apis":[{"path":"/redirect","schema":"{path}.{format}","format":["json"]}],"basePath":%q}`, server.URL+"/v1")
+		case "/v1/redirect.json":
+			http.Redirect(writer, request, external.URL+"/openapi.json", http.StatusFound)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	_, err := importer.ImportOpenAPI(context.Background(), "Redirect Catalog", "live", server.URL+"/console/", importer.Options{
+		LibraryRoot: root, HTTPClient: server.Client(), Rebuild: func(context.Context) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "redirect changes origin") {
+		t.Fatalf("expected cross-origin redirect error, got %v", err)
+	}
+	if externalRequests != 0 {
+		t.Fatalf("cross-origin redirect target received %d requests", externalRequests)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "redirect-catalog", "live")); !os.IsNotExist(statErr) {
+		t.Fatalf("redirect catalog destination exists: %v", statErr)
+	}
+}
+
+func TestRuntimeOnlyRapiDocIsDetectedButNotClaimedComplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(writer, `<html><body><rapi-doc id="docs"></rapi-doc><script>document.getElementById("docs").loadSpec({openapi:"3.0.3",paths:{}})</script></body></html>`)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	options := importer.Options{LibraryRoot: root, Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client()}
+	detection, err := importer.DetectURL(context.Background(), server.URL, options)
+	if err != nil || detection.Engine != "openapi" || detection.Framework != "rapidoc" {
+		t.Fatalf("runtime RapiDoc detection: %+v, %v", detection, err)
+	}
+	_, err = importer.ImportOpenAPI(context.Background(), "Runtime API", "live", server.URL, options)
+	if err == nil || !strings.Contains(err.Error(), "no discoverable specification URL") {
+		t.Fatalf("expected explicit nondiscoverable error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "runtime-api", "live")); !os.IsNotExist(statErr) {
+		t.Fatalf("runtime-only RapiDoc destination exists: %v", statErr)
+	}
+}
+
 func TestImportOpenAPIDiscoversExternalSwaggerInitializer(t *testing.T) {
 	validatorRequests := 0
 	wrongRequests := 0
