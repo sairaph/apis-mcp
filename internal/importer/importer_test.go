@@ -1534,6 +1534,152 @@ func TestImportHTMLRejectsNextraPageWithoutStaticContent(t *testing.T) {
 	}
 }
 
+func TestImportHTMLExhaustsScopedAstroStarlightSitemapIndex(t *testing.T) {
+	outsideRequests := 0
+	canonicalStartRequests := 0
+	page := func(route, title, body string) string {
+		return `<!doctype html><html lang="en"><head><meta name="generator" content="Astro v7.0.2"><meta name="generator" content="Starlight v0.41.4"><link rel="canonical" href="` + route + `"><link rel="alternate" hreflang="en" href="` + route + `"><link rel="alternate" hreflang="es" href="` + strings.Replace(route, "/project/en/", "/project/es/", 1) + `"><link rel="alternate" hreflang="x-default" href="` + route + `"><link rel="sitemap" href="/project/sitemap-index.xml"></head><body><header>Header chrome</header><nav class="sidebar" aria-label="Main"><div id="starlight__sidebar"><a href="/project/en/start/">Start</a><a href="/project/en/second/">Second</a><a href="/project/about/">About</a></div></nav><main data-pagefind-body><div class="sl-banner" data-pagefind-ignore><p>Announcement chrome</p></div><div class="hero"><h1>` + title + `</h1><div class="mobile-only not-content"><p>Responsive authored text.</p></div><div class="facepile not-content"><p>Responsive authored text.</p></div></div><div class="sl-markdown-content">` + body + `</div><footer>Pagination chrome</footer></main><aside>TOC chrome</aside></body></html>`
+	}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/project/en/latest/":
+			fmt.Fprint(writer, page(server.URL+"/project/en/start/", "Starlight Start", `<h2>Quick Start<a class="sl-anchor-link" href="#quick-start">Section titled Quick Start</a></h2><p>Scoped Starlight content.</p><aside class="starlight-aside"><p><strong>Tip:</strong> Keep this authored aside.</p></aside><div class="expressive-code"><figure class="frame not-content"><pre data-language="ts"><code><div class="ec-line"><div class="code"><span>const one = 1</span></div></div><div class="ec-line"><div class="code"><span>const two = 2</span></div></div></code></pre></figure></div><ol class="sl-steps"><li><p>Install dependencies.</p><pre data-language="sh"><code><div class="ec-line"><div class="code">npm install</div></div></code></pre></li></ol><div role="tabpanel">Active <strong>tab</strong> <code>text</code>.</div><div role="tabpanel" hidden>Inactive tab content.</div>`))
+		case "/project/en/start/":
+			canonicalStartRequests++
+			http.Error(writer, "canonical alias fetched twice", http.StatusInternalServerError)
+		case "/project/en/second/":
+			fmt.Fprint(writer, page(server.URL+"/project/en/second/", "Starlight Second", `<p>Second locale page.</p><pre class="generated-code"><code data-theme-css></code></pre>`))
+		case "/project/es/start/", "/project/es/second/", "/project/about/":
+			outsideRequests++
+			http.Error(writer, "outside selected locale", http.StatusInternalServerError)
+		case "/project/sitemap-index.xml":
+			fmt.Fprintf(writer, `<sitemapindex><sitemap><loc>%s/project/sitemap-a.xml</loc></sitemap><sitemap><loc>%s/project/sitemap-b.xml</loc></sitemap></sitemapindex>`, server.URL, server.URL)
+		case "/project/sitemap-a.xml":
+			fmt.Fprintf(writer, `<urlset><url><loc>%[1]s/project/en/start/</loc><link rel="alternate" hreflang="en" href="%[1]s/project/en/start/"/><link rel="alternate" hreflang="es" href="%[1]s/project/es/start/"/></url><url><loc>%[1]s/project/es/start/</loc><link rel="alternate" hreflang="en" href="%[1]s/project/en/start/"/><link rel="alternate" hreflang="es" href="%[1]s/project/es/start/"/></url></urlset>`, server.URL)
+		case "/project/sitemap-b.xml":
+			fmt.Fprintf(writer, `<urlset><url><loc>%[1]s/project/en/second/</loc><link rel="alternate" hreflang="en" href="%[1]s/project/en/second/"/><link rel="alternate" hreflang="es" href="%[1]s/project/es/second/"/></url><url><loc>%[1]s/project/es/second/</loc><link rel="alternate" hreflang="en" href="%[1]s/project/en/second/"/><link rel="alternate" hreflang="es" href="%[1]s/project/es/second/"/></url><url><loc>%[1]s/project/about/</loc><link rel="alternate" hreflang="en" href="%[1]s/project/about/"/><link rel="alternate" hreflang="es" href="%[1]s/project/es/about/"/></url></urlset>`, server.URL)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	options := importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, index), HTTPClient: server.Client(),
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	}
+	source := server.URL + "/project/en/latest/?source=fixture"
+	detection, err := importer.DetectURL(context.Background(), source, options)
+	if err != nil || detection.Framework != "astro-starlight" {
+		t.Fatalf("Astro Starlight detection: %+v, %v", detection, err)
+	}
+	result, err := importer.ImportHTML(context.Background(), "Starlight Fixture", "v1", source, options)
+	if err != nil || result.Framework != "astro-starlight" || result.Pages != 2 || result.Truncated || outsideRequests != 0 || canonicalStartRequests != 0 {
+		t.Fatalf("Astro Starlight import: %+v, outside=%d, canonical_start=%d, %v", result, outsideRequests, canonicalStartRequests, err)
+	}
+	var generated string
+	for _, name := range relativeFiles(t, result.Destination) {
+		if filepath.Ext(name) == ".md" && name != "_index.md" {
+			raw, readErr := os.ReadFile(filepath.Join(result.Destination, name))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			generated += string(raw)
+		}
+	}
+	for _, wanted := range []string{"# Starlight Start", "## Quick Start", "Scoped Starlight content.", "Keep this authored aside.", "```ts\nconst one = 1\nconst two = 2\n```", "1. Install dependencies.\n\n   ```sh\n   npm install\n   ```", "Active **tab** `text`.", "# Starlight Second", "Second locale page."} {
+		if !strings.Contains(generated, wanted) {
+			t.Errorf("generated Astro Starlight Markdown missing %q:\n%s", wanted, generated)
+		}
+	}
+	if strings.Count(generated, "Responsive authored text.") != 2 {
+		t.Errorf("generated Astro Starlight Markdown did not isolate responsive duplicate:\n%s", generated)
+	}
+	for _, excluded := range []string{"Header chrome", "Announcement chrome", "Pagination chrome", "TOC chrome", "Section titled Quick Start", "Inactive tab content."} {
+		if strings.Contains(generated, excluded) {
+			t.Errorf("generated Astro Starlight Markdown contains chrome %q", excluded)
+		}
+	}
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	search, err := snapshot.Search(context.Background(), library.SearchRequest{DocID: "starlight-fixture-v1", Query: "dependencies"})
+	if err != nil || search.Total == 0 {
+		t.Fatalf("indexed Astro Starlight search: %+v, %v", search, err)
+	}
+}
+
+func TestImportHTMLRejectsInvalidAstroStarlightSitemapIndex(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		index func(string) string
+		shard func(string) string
+		want  string
+	}{
+		{
+			name: "repeated shard",
+			index: func(base string) string {
+				return fmt.Sprintf(`<sitemapindex><sitemap><loc>%[1]s/sitemap-0.xml</loc></sitemap><sitemap><loc>%[1]s/sitemap-0.xml</loc></sitemap></sitemapindex>`, base)
+			},
+			shard: func(base string) string {
+				return fmt.Sprintf(`<urlset><url><loc>%s/docs/start/</loc></url></urlset>`, base)
+			},
+			want: "repeats a shard",
+		},
+		{
+			name: "missing location",
+			index: func(base string) string {
+				return fmt.Sprintf(`<sitemapindex><sitemap><loc>%s/sitemap-0.xml</loc></sitemap></sitemapindex>`, base)
+			},
+			shard: func(base string) string {
+				return fmt.Sprintf(`<urlset><url><loc>%s/docs/start/</loc></url><url/></urlset>`, base)
+			},
+			want: "invalid URL record",
+		},
+		{
+			name: "multiple shard locations",
+			index: func(base string) string {
+				return fmt.Sprintf(`<sitemapindex><sitemap><loc>%[1]s/sitemap-0.xml</loc><loc>%[1]s/sitemap-1.xml</loc></sitemap></sitemapindex>`, base)
+			},
+			shard: func(base string) string {
+				return fmt.Sprintf(`<urlset><url><loc>%s/docs/start/</loc></url></urlset>`, base)
+			},
+			want: "invalid shard record",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/docs/start/":
+					fmt.Fprintf(writer, `<!doctype html><html><head><meta name="generator" content="Starlight v0.41.4"><link rel="canonical" href="%s/docs/start/"><link rel="alternate" hreflang="en" href="%s/docs/start/"><link rel="sitemap" href="/sitemap-index.xml"></head><body><div id="starlight__sidebar"><a href="/docs/start/">Start</a></div><main data-pagefind-body><h1>Start</h1><div class="sl-markdown-content"><p>Content.</p></div></main></body></html>`, server.URL, server.URL)
+				case "/sitemap-index.xml":
+					fmt.Fprint(writer, test.index(server.URL))
+				case "/sitemap-0.xml":
+					fmt.Fprint(writer, test.shard(server.URL))
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			root := t.TempDir()
+			_, err := importer.ImportHTML(context.Background(), "Invalid Starlight", "v1", server.URL+"/docs/start/", importer.Options{
+				LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: server.Client(),
+				HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %q Astro Starlight sitemap rejection, got %v", test.want, err)
+			}
+		})
+	}
+}
+
 func TestDetectAndImportHTMLRejectPlainText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain")

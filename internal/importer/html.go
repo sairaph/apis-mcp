@@ -40,6 +40,7 @@ var (
 	sphinxFileSuffixOption  = regexp.MustCompile(`(?m)\bFILE_SUFFIX\s*:\s*['"]([^'"]*)['"]`)
 	sphinxLinkSuffixOption  = regexp.MustCompile(`(?m)\bLINK_SUFFIX\s*:\s*['"]([^'"]*)['"]`)
 	vitepressGenerator      = regexp.MustCompile(`(?i)^vitepress v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9a-z.-]+)?(?:\+[0-9a-z.-]+)?$`)
+	starlightGenerator      = regexp.MustCompile(`(?i)^starlight v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9a-z.-]+)?(?:\+[0-9a-z.-]+)?$`)
 )
 
 type htmlNode struct {
@@ -70,6 +71,19 @@ type sphinxRuntime struct {
 	builder    string
 	fileSuffix string
 	linkSuffix string
+}
+
+type starlightLocaleScope struct {
+	language     string
+	root         string
+	excluded     []string
+	multilingual bool
+}
+
+type starlightSitemapAlternate struct {
+	Rel      string `xml:"rel,attr"`
+	Language string `xml:"hreflang,attr"`
+	Href     string `xml:"href,attr"`
 }
 
 // ImportHTML crawls a bounded set of static, same-origin HTML pages and
@@ -283,6 +297,31 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 						}
 					}
 				}
+			case rootFramework == "astro-starlight":
+				var sitemapURL *url.URL
+				var localeScope starlightLocaleScope
+				sitemapURL, inventoryErr = starlightSitemapURL(document, pageURL)
+				if inventoryErr == nil {
+					localeScope, inventoryErr = starlightLocale(document, pageURL, sitemapURL)
+				}
+				if inventoryErr == nil {
+					siteRoot = normalizeDocumentationRoot(path.Dir(sitemapURL.Path))
+					scopePath = localeScope.root
+					inventory, inventoryErr = starlightSitemapInventory(ctx, pageURL, sitemapURL, siteRoot, localeScope, reader)
+				}
+				if inventoryErr == nil {
+					canonicalStart, canonicalErr := mkdocsInventoryURL(provenance)
+					if canonicalErr == nil && !containsString(inventory, canonicalStart) {
+						alias, aliasErr := starlightCanonicalURL(document, pageURL)
+						if aliasErr != nil || !containsString(inventory, alias) {
+							alias, aliasErr = vitepressStartInventoryAlias(pageURL, localeScope.root, inventory)
+						}
+						if aliasErr == nil {
+							inventoryAliases[canonicalStart] = alias
+							inventoryIdentity = alias
+						}
+					}
+				}
 			case rootFramework == "sphinx":
 				var runtime sphinxRuntime
 				siteRoot, runtime, inventoryErr = sphinxSite(ctx, document, pageURL, reader)
@@ -326,8 +365,14 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				}
 			}
 		}
+		if rootFramework == "astro-starlight" {
+			canonical, canonicalErr := starlightCanonicalURL(document, pageURL)
+			if canonicalErr != nil || canonical != inventoryIdentity {
+				return Result{}, fmt.Errorf("astro-starlight crawl did not complete: page %s has an invalid canonical URL", provenance)
+			}
+		}
 		title, markdown := htmlToMarkdown(view.content, pageURL, view.includeHeader)
-		if (rootFramework == "vitepress" || rootFramework == "nextra") && strings.TrimSpace(markdown) == "" {
+		if (rootFramework == "vitepress" || rootFramework == "nextra" || rootFramework == "astro-starlight") && strings.TrimSpace(markdown) == "" {
 			return Result{}, fmt.Errorf("%s crawl did not complete: page has no statically rendered content: %s", rootFramework, provenance)
 		}
 		if title == "" {
@@ -687,6 +732,16 @@ func inspectHTMLDocument(root *htmlNode) htmlDocumentView {
 		if view.content == nil {
 			view.profileError = errors.New("Nextra page has no supported docs-theme content container")
 		}
+	case "astro-starlight":
+		view.content = firstHTMLAttributePresent(root, "data-pagefind-body")
+		if sidebar := firstHTMLAttribute(root, "id", "starlight__sidebar"); sidebar != nil {
+			view.linkRoots = []*htmlNode{sidebar}
+		} else {
+			view.linkRoots = nil
+		}
+		if view.content == nil || firstHTMLTag(view.content, "h1") == nil || firstHTMLClass(view.content, "sl-markdown-content") == nil {
+			view.profileError = errors.New("Astro Starlight page has no supported statically rendered content container")
+		}
 	}
 	return view
 }
@@ -709,6 +764,9 @@ func detectHTMLFramework(root *htmlNode) string {
 				return
 			case vitepressGenerator.MatchString(generator):
 				framework = "vitepress"
+				return
+			case starlightGenerator.MatchString(generator):
+				framework = "astro-starlight"
 				return
 			case strings.HasPrefix(generator, "docusaurus"):
 				framework = "docusaurus"
@@ -954,6 +1012,303 @@ func htmlSitemapInventory(ctx context.Context, framework string, pageURL *url.UR
 	}
 	sort.Strings(urls)
 	return urls, nil
+}
+
+func starlightSitemapURL(document *htmlNode, pageURL *url.URL) (*url.URL, error) {
+	var found []*url.URL
+	walkHTML(document, func(node *htmlNode) {
+		if node.tag != "link" || !hasHTMLToken(node.attrs["rel"], "sitemap") {
+			return
+		}
+		linked, err := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+		if err == nil && sameOrigin(pageURL, linked) && linked.RawQuery == "" && linked.Fragment == "" {
+			found = append(found, linked)
+		}
+	})
+	if len(found) != 1 {
+		return nil, errors.New("Astro Starlight page has no unique same-origin sitemap index")
+	}
+	return found[0], nil
+}
+
+func starlightCanonicalURL(document *htmlNode, pageURL *url.URL) (string, error) {
+	var found []string
+	walkHTML(document, func(node *htmlNode) {
+		if node.tag != "link" || !hasHTMLToken(node.attrs["rel"], "canonical") {
+			return
+		}
+		linked, err := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+		if err != nil || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || linked.Fragment != "" {
+			return
+		}
+		canonical, err := canonicalHTTPURL(linked.String())
+		if err == nil {
+			found = append(found, canonical)
+		}
+	})
+	if len(found) != 1 {
+		return "", errors.New("Astro Starlight page has no unique same-origin canonical URL")
+	}
+	return found[0], nil
+}
+
+func starlightLocale(document *htmlNode, pageURL, sitemapURL *url.URL) (starlightLocaleScope, error) {
+	siteRoot := normalizeDocumentationRoot(path.Dir(sitemapURL.Path))
+	canonical, err := starlightCanonicalURL(document, pageURL)
+	if err != nil {
+		return starlightLocaleScope{}, err
+	}
+	canonicalURL, err := url.Parse(canonical)
+	if err != nil || !withinDocumentationPath(canonicalURL.Path, siteRoot) {
+		return starlightLocaleScope{}, errors.New("Astro Starlight canonical URL is outside the sitemap deployment root")
+	}
+
+	seenLanguages := make(map[string]bool)
+	seenURLs := make(map[string]bool)
+	var alternatePaths []string
+	currentFound := false
+	currentLanguage := ""
+	var alternateErr error
+	walkHTML(document, func(node *htmlNode) {
+		if alternateErr != nil || node.tag != "link" || !hasHTMLToken(node.attrs["rel"], "alternate") {
+			return
+		}
+		language := strings.ToLower(strings.TrimSpace(node.attrs["hreflang"]))
+		if language == "x-default" {
+			return
+		}
+		if language == "" || seenLanguages[language] {
+			alternateErr = errors.New("Astro Starlight page has an invalid or repeated hreflang language")
+			return
+		}
+		linked, parseErr := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+		if parseErr != nil || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || linked.Fragment != "" || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
+			alternateErr = errors.New("Astro Starlight page has an invalid hreflang URL")
+			return
+		}
+		alternate, canonicalErr := canonicalHTTPURL(linked.String())
+		if canonicalErr != nil || seenURLs[alternate] {
+			alternateErr = errors.New("Astro Starlight page has a repeated hreflang URL")
+			return
+		}
+		seenLanguages[language] = true
+		seenURLs[alternate] = true
+		alternatePaths = append(alternatePaths, linked.Path)
+		if alternate == canonical {
+			currentFound = true
+			currentLanguage = language
+		}
+	})
+	if alternateErr != nil {
+		return starlightLocaleScope{}, alternateErr
+	}
+	if !currentFound || len(alternatePaths) == 0 {
+		return starlightLocaleScope{}, errors.New("Astro Starlight page has no valid hreflang alternate for its canonical URL")
+	}
+
+	suffix := commonPathSuffix(alternatePaths, siteRoot)
+	if len(suffix) == 0 {
+		return starlightLocaleScope{}, errors.New("Astro Starlight hreflang alternates have no common route suffix")
+	}
+	prefixes := make(map[string]bool)
+	currentRoot := ""
+	for _, alternatePath := range alternatePaths {
+		segments := documentationPathSegments(alternatePath, siteRoot)
+		prefix := segments[:len(segments)-len(suffix)]
+		localeRoot := siteRoot
+		if len(prefix) > 0 {
+			localeRoot = normalizeDocumentationRoot(path.Join(siteRoot, path.Join(prefix...)))
+		}
+		prefixes[localeRoot] = true
+		if path.Clean(alternatePath) == path.Clean(canonicalURL.Path) {
+			currentRoot = localeRoot
+		}
+	}
+	if currentRoot == "" {
+		return starlightLocaleScope{}, errors.New("Astro Starlight canonical URL has no locale root")
+	}
+	var excluded []string
+	for prefix := range prefixes {
+		if prefix != currentRoot {
+			excluded = append(excluded, prefix)
+		}
+	}
+	sort.Strings(excluded)
+	return starlightLocaleScope{language: currentLanguage, root: currentRoot, excluded: excluded, multilingual: len(alternatePaths) > 1}, nil
+}
+
+func documentationPathSegments(value, root string) []string {
+	cleaned := strings.Trim(path.Clean(value), "/")
+	root = strings.Trim(path.Clean(root), "/")
+	if root != "" {
+		cleaned = strings.TrimPrefix(cleaned, root)
+		cleaned = strings.TrimPrefix(cleaned, "/")
+	}
+	if cleaned == "" {
+		return nil
+	}
+	return strings.Split(cleaned, "/")
+}
+
+func commonPathSuffix(paths []string, root string) []string {
+	var common []string
+	for index, value := range paths {
+		segments := documentationPathSegments(value, root)
+		if index == 0 {
+			common = append(common, segments...)
+			continue
+		}
+		matched := 0
+		for matched < len(common) && matched < len(segments) && common[len(common)-1-matched] == segments[len(segments)-1-matched] {
+			matched++
+		}
+		common = common[len(common)-matched:]
+	}
+	return common
+}
+
+func starlightSitemapInventory(ctx context.Context, pageURL, sitemapURL *url.URL, siteRoot string, locale starlightLocaleScope, reader *sourceReader) ([]string, error) {
+	raw, provenance, err := reader.read(ctx, sitemapURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Astro Starlight sitemap index %s: %w", sitemapURL.String(), err)
+	}
+	wantedIndex, _ := canonicalHTTPURL(sitemapURL.String())
+	actualIndex, _ := canonicalHTTPURL(provenance)
+	if wantedIndex == "" || actualIndex != wantedIndex {
+		return nil, errors.New("Astro Starlight sitemap index redirected")
+	}
+	var index struct {
+		XMLName  xml.Name
+		Sitemaps []struct {
+			Locations []string `xml:"loc"`
+		} `xml:"sitemap"`
+	}
+	if err := xml.Unmarshal(raw, &index); err != nil || index.XMLName.Local != "sitemapindex" {
+		return nil, fmt.Errorf("parse Astro Starlight sitemap index %s: invalid sitemap index", provenance)
+	}
+	if len(index.Sitemaps) == 0 || len(index.Sitemaps) > maxHTMLSitemapURLs {
+		return nil, fmt.Errorf("Astro Starlight sitemap index %s has an invalid shard count", provenance)
+	}
+
+	seenShards := make(map[string]bool, len(index.Sitemaps))
+	seenPages := make(map[string]bool)
+	var inventory []string
+	for shardIndex, entry := range index.Sitemaps {
+		if len(entry.Locations) != 1 || strings.TrimSpace(entry.Locations[0]) == "" {
+			return nil, fmt.Errorf("Astro Starlight sitemap index %s contains invalid shard record at position %d", provenance, shardIndex)
+		}
+		shardURL, parseErr := url.Parse(strings.TrimSpace(entry.Locations[0]))
+		if parseErr != nil || shardURL.Scheme != "http" && shardURL.Scheme != "https" || shardURL.Host == "" || shardURL.RawQuery != "" || shardURL.Fragment != "" || !sameOrigin(pageURL, shardURL) || !withinDocumentationPath(shardURL.Path, siteRoot) {
+			return nil, fmt.Errorf("Astro Starlight sitemap index %s contains invalid shard at position %d", provenance, shardIndex)
+		}
+		canonicalShard, canonicalErr := canonicalHTTPURL(shardURL.String())
+		if canonicalErr != nil || seenShards[canonicalShard] {
+			return nil, fmt.Errorf("Astro Starlight sitemap index %s repeats a shard", provenance)
+		}
+		seenShards[canonicalShard] = true
+		shardRaw, shardProvenance, readErr := reader.read(ctx, canonicalShard, nil)
+		if readErr != nil {
+			return nil, fmt.Errorf("fetch Astro Starlight sitemap shard %s: %w", canonicalShard, readErr)
+		}
+		actualShard, _ := canonicalHTTPURL(shardProvenance)
+		if actualShard != canonicalShard {
+			return nil, fmt.Errorf("Astro Starlight sitemap shard %s redirected", canonicalShard)
+		}
+		var shard struct {
+			XMLName xml.Name
+			URLs    []struct {
+				Locations  []string                    `xml:"loc"`
+				Alternates []starlightSitemapAlternate `xml:"link"`
+			} `xml:"url"`
+		}
+		if err := xml.Unmarshal(shardRaw, &shard); err != nil || shard.XMLName.Local != "urlset" || len(shard.URLs) == 0 {
+			return nil, fmt.Errorf("parse Astro Starlight sitemap shard %s: invalid URL set", shardProvenance)
+		}
+		for pageIndex, page := range shard.URLs {
+			if len(page.Locations) != 1 || strings.TrimSpace(page.Locations[0]) == "" {
+				return nil, fmt.Errorf("Astro Starlight sitemap shard %s contains invalid URL record at position %d", shardProvenance, pageIndex)
+			}
+			location := page.Locations[0]
+			linked, parseErr := url.Parse(strings.TrimSpace(location))
+			if parseErr != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || linked.RawQuery != "" || linked.Fragment != "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
+				return nil, fmt.Errorf("Astro Starlight sitemap shard %s contains invalid URL at position %d", shardProvenance, pageIndex)
+			}
+			canonicalPage, canonicalErr := canonicalHTTPURL(linked.String())
+			if canonicalErr != nil || seenPages[canonicalPage] {
+				return nil, fmt.Errorf("Astro Starlight sitemap repeats URL %s", canonicalPage)
+			}
+			seenPages[canonicalPage] = true
+			if len(seenPages) > maxHTMLSitemapURLs {
+				return nil, fmt.Errorf("Astro Starlight sitemap exceeds %d URLs", maxHTMLSitemapURLs)
+			}
+			selectedLocale, alternateErr := starlightSitemapRecordLocale(page.Alternates, canonicalPage, pageURL, siteRoot, locale)
+			if alternateErr != nil {
+				return nil, fmt.Errorf("Astro Starlight sitemap shard %s has invalid alternates at position %d: %w", shardProvenance, pageIndex, alternateErr)
+			}
+			if selectedLocale {
+				inventory = append(inventory, canonicalPage)
+			}
+		}
+	}
+	if len(inventory) == 0 {
+		return nil, fmt.Errorf("Astro Starlight sitemap contains no URLs under locale root %s", locale.root)
+	}
+	sort.Strings(inventory)
+	return inventory, nil
+}
+
+func starlightSitemapRecordLocale(alternates []starlightSitemapAlternate, canonicalPage string, pageURL *url.URL, siteRoot string, locale starlightLocaleScope) (bool, error) {
+	if len(alternates) == 0 && !locale.multilingual {
+		parsed, err := url.Parse(canonicalPage)
+		return err == nil && withinStarlightLocale(parsed.Path, locale), nil
+	}
+	if len(alternates) == 0 {
+		return false, errors.New("multilingual URL record has no alternates")
+	}
+	seenLanguages := make(map[string]bool)
+	seenURLs := make(map[string]bool)
+	selected := ""
+	matchedSelf := false
+	for _, alternate := range alternates {
+		language := strings.ToLower(strings.TrimSpace(alternate.Language))
+		linked, err := url.Parse(strings.TrimSpace(alternate.Href))
+		if !strings.EqualFold(strings.TrimSpace(alternate.Rel), "alternate") || language == "" || err != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || linked.RawQuery != "" || linked.Fragment != "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
+			return false, errors.New("invalid hreflang alternate")
+		}
+		canonical, err := canonicalHTTPURL(linked.String())
+		if err != nil || seenLanguages[language] {
+			return false, errors.New("repeated hreflang language or URL")
+		}
+		seenLanguages[language] = true
+		if language == "x-default" {
+			continue
+		}
+		if seenURLs[canonical] {
+			return false, errors.New("repeated hreflang language or URL")
+		}
+		seenURLs[canonical] = true
+		matchedSelf = matchedSelf || canonical == canonicalPage
+		if language == locale.language {
+			selected = canonical
+		}
+	}
+	if !matchedSelf {
+		return false, errors.New("URL record does not identify its own locale")
+	}
+	parsed, err := url.Parse(canonicalPage)
+	return err == nil && selected == canonicalPage && withinStarlightLocale(parsed.Path, locale), nil
+}
+
+func withinStarlightLocale(value string, locale starlightLocaleScope) bool {
+	if !withinDocumentationPath(value, locale.root) {
+		return false
+	}
+	for _, excluded := range locale.excluded {
+		if withinDocumentationPath(value, excluded) {
+			return false
+		}
+	}
+	return true
 }
 
 func vitepressSiteRoot(document *htmlNode, pageURL *url.URL) (string, error) {
@@ -1329,7 +1684,7 @@ func isMkDocsFramework(framework string) bool {
 }
 
 func isFiniteInventoryFramework(framework string) bool {
-	return isMkDocsFramework(framework) || framework == "sphinx" || framework == "vitepress" || framework == "nextra"
+	return isMkDocsFramework(framework) || framework == "sphinx" || framework == "vitepress" || framework == "nextra" || framework == "astro-starlight"
 }
 
 func containsString(values []string, wanted string) bool {
@@ -1380,6 +1735,19 @@ func firstHTMLAttribute(root *htmlNode, attribute, value string) *htmlNode {
 	var found *htmlNode
 	walkHTML(root, func(node *htmlNode) {
 		if found == nil && strings.EqualFold(strings.TrimSpace(node.attrs[attribute]), value) {
+			found = node
+		}
+	})
+	return found
+}
+
+func firstHTMLAttributePresent(root *htmlNode, attribute string) *htmlNode {
+	var found *htmlNode
+	walkHTML(root, func(node *htmlNode) {
+		if found != nil {
+			return
+		}
+		if _, exists := node.attrs[attribute]; exists {
 			found = node
 		}
 	})
@@ -1446,8 +1814,15 @@ func htmlToMarkdown(root *htmlNode, base *url.URL, includeHeader bool) (string, 
 }
 
 func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL, includeHeader bool) {
-	semanticAside := node.tag == "aside" && (hasHTMLClass(node, "footnote") || hasHTMLClass(node, "footnote-list") || strings.EqualFold(node.attrs["role"], "doc-footnote"))
+	semanticAside := node.tag == "aside" && (hasHTMLClass(node, "footnote") || hasHTMLClass(node, "footnote-list") || hasHTMLClass(node, "starlight-aside") || strings.EqualFold(node.attrs["role"], "doc-footnote"))
 	if htmlNodeHidden(node) || skippedHTMLTag(node.tag) && !(includeHeader && node.tag == "header") && !semanticAside {
+		return
+	}
+	if node.tag == "" {
+		return
+	}
+	if strings.EqualFold(node.attrs["role"], "tabpanel") && !htmlHasBlockChild(node) {
+		writeMarkdownBlock(output, renderHTMLInline(node, base, nil))
 		return
 	}
 	switch node.tag {
@@ -1466,6 +1841,9 @@ func renderHTMLBlocks(output *strings.Builder, node *htmlNode, base *url.URL, in
 			}
 		}
 		code := strings.Trim(strings.ReplaceAll(htmlCodeText(node), "\r\n", "\n"), "\n")
+		if strings.TrimSpace(code) == "" {
+			return
+		}
 		writeMarkdownBlock(output, "```"+language+"\n"+code+"\n```")
 		return
 	case "ul", "ol":
@@ -1598,7 +1976,7 @@ func renderHTMLInline(node *htmlNode, base *url.URL, excluded map[*htmlNode]bool
 			output.WriteByte('*')
 			return
 		case "a":
-			if hasHTMLClass(current, "hash-link") || hasHTMLClass(current, "headerlink") || hasHTMLClass(current, "header-anchor") {
+			if hasHTMLClass(current, "hash-link") || hasHTMLClass(current, "headerlink") || hasHTMLClass(current, "header-anchor") || hasHTMLClass(current, "sl-anchor-link") {
 				return
 			}
 			if hasHTMLClass(current, "toclink") {
@@ -1649,7 +2027,29 @@ func renderHTMLList(node *htmlNode, base *url.URL, depth int) string {
 		if node.tag == "ol" {
 			marker = fmt.Sprintf("%d. ", itemNumber)
 		}
-		output.WriteString(strings.Repeat("  ", depth) + marker + renderHTMLInline(item, base, excluded) + "\n")
+		if htmlListItemHasBlocks(item) {
+			var blocks strings.Builder
+			for _, child := range item.children {
+				if !excluded[child] {
+					renderHTMLBlocks(&blocks, child, base, false)
+				}
+			}
+			lines := strings.Split(cleanMarkdown(blocks.String()), "\n")
+			indent := strings.Repeat("  ", depth)
+			continuation := indent + strings.Repeat(" ", len(marker))
+			if len(lines) > 0 && lines[0] != "" {
+				output.WriteString(indent + marker + lines[0] + "\n")
+				for _, line := range lines[1:] {
+					if line == "" {
+						output.WriteByte('\n')
+					} else {
+						output.WriteString(continuation + line + "\n")
+					}
+				}
+			}
+		} else {
+			output.WriteString(strings.Repeat("  ", depth) + marker + renderHTMLInline(item, base, excluded) + "\n")
+		}
 		for _, child := range nested {
 			if rendered := renderHTMLList(child, base, depth+1); rendered != "" {
 				output.WriteString(rendered + "\n")
@@ -1657,6 +2057,16 @@ func renderHTMLList(node *htmlNode, base *url.URL, depth int) string {
 		}
 	}
 	return strings.TrimRight(output.String(), "\n")
+}
+
+func htmlListItemHasBlocks(item *htmlNode) bool {
+	for _, child := range item.children {
+		switch child.tag {
+		case "h1", "h2", "h3", "h4", "h5", "h6", "p", "pre", "table", "article", "section", "div", "aside":
+			return true
+		}
+	}
+	return false
 }
 
 func renderHTMLTable(node *htmlNode, base *url.URL) string {
@@ -1768,7 +2178,12 @@ func lastHTMLChild(node *htmlNode, tag string) *htmlNode {
 
 func htmlNodeHidden(node *htmlNode) bool {
 	_, hidden := node.attrs["hidden"]
-	return hidden
+	_, pagefindIgnored := node.attrs["data-pagefind-ignore"]
+	_, algoliaExcluded := node.attrs["data-algolia-exclude"]
+	starlightBanner := pagefindIgnored && hasHTMLClass(node, "sl-banner")
+	starlightPromotion := algoliaExcluded && node.parent != nil && hasHTMLClass(node.parent, "hide-when-toc-is-visible")
+	starlightMobileDuplicate := hasHTMLClass(node, "mobile-only") && hasHTMLClass(node, "not-content") && node.parent != nil && hasHTMLClass(node.parent, "hero")
+	return hidden || starlightBanner || starlightPromotion || starlightMobileDuplicate
 }
 
 func htmlHasBlockChild(node *htmlNode) bool {
@@ -1785,6 +2200,9 @@ func htmlCodeLanguage(node *htmlNode) string {
 	for current := node; current != nil; current = current.parent {
 		if current != node && (current.tag == "article" || current.tag == "main" || current.tag == "section" || current.tag == "body" || current.tag == "html" || current.tag == "document" || hasHTMLClass(current, "md-content__inner")) {
 			return ""
+		}
+		if language := strings.TrimSpace(current.attrs["data-language"]); language != "" {
+			return language
 		}
 		for _, class := range strings.Fields(current.attrs["class"]) {
 			if strings.HasPrefix(class, "language-") {
@@ -1812,7 +2230,11 @@ func htmlCodeText(node *htmlNode) string {
 	for _, child := range node.children {
 		output.WriteString(htmlCodeText(child))
 	}
-	return output.String()
+	value := output.String()
+	if hasHTMLClass(node, "ec-line") {
+		return strings.TrimRight(value, "\n") + "\n"
+	}
+	return value
 }
 
 func skippedHTMLTag(tag string) bool {

@@ -27,7 +27,7 @@ Status values are `planned`, `active`, and `complete`.
 | Sphinx | https://www.sphinx-doc.org/en/master/ | https://requests.readthedocs.io/en/latest/ | Static HTML / search index | complete |
 | VitePress | https://vitepress.dev/guide/getting-started | https://vite.dev/guide/ | Static HTML / sitemap | complete |
 | Nextra | https://nextra.site/docs | https://authjs.dev/getting-started | Static HTML / sitemap | complete |
-| Astro Starlight | https://starlight.astro.build/getting-started/ | https://docs.astro.build/en/getting-started/ | Static HTML | planned |
+| Astro Starlight | https://starlight.astro.build/getting-started/ | https://docs.astro.build/en/getting-started/ | Static HTML / sitemap index | complete |
 | Docsify | https://docsify.js.org/#/quickstart | https://docsify-this.net/ | Source Markdown | planned |
 | mdBook | https://rust-lang.github.io/mdBook/ | https://doc.rust-lang.org/book/ | Static HTML / TOC | planned |
 | VuePress | https://v2.vuepress.vuejs.org/guide/ | https://vuex.vuejs.org/ | Static HTML | planned |
@@ -218,6 +218,35 @@ page and its Nextra sidebar. Every route in that scoped inventory must be
 fetched, generated, and indexed. Sidebar links outside the current documentation
 section do not widen the inventory, and an absent sitemap, ambiguous deployment
 root, empty section, or non-static content container fails closed.
+
+### Astro Starlight
+
+Verified on 2026-07-27 against two independent Starlight 0.41 deployments:
+
+| Check | Starlight development site | Astro Docs test site |
+| --- | --- | --- |
+| Framework version | `0.41.4` | `0.41.0` |
+| Astro version | `7.0.2` | `7.0.2` |
+| Job ID | `019fa3cc-d45b-7978-b3fa-93566bdc6661` | `019fa3cc-d52b-7783-a0f0-c89db67445df` |
+| Framework detection | `astro-starlight` | `astro-starlight` |
+| Locale-scoped sitemap entries fetched | 36 | 417 |
+| Canonical Markdown pages | 36 | 417 |
+| Hero and theme content isolated | Pass | Pass |
+| Expressive Code languages retained | Pass | Pass |
+| Multi-block Steps retained | Pass | Pass |
+| SQLite pages for document | 36 | 417 |
+| FTS acceptance query | `sidebar` | `islands` |
+| Detached terminal state | `succeeded` | `succeeded` |
+| Unlimited crawl completed naturally | Pass | Pass |
+| Truncated | No | No |
+
+Astro Starlight completeness is bounded by every URL record in every shard of
+the uniquely advertised same-origin sitemap index. For multilingual sites, each
+record's `hreflang` alternates identify the selected locale instead of relying
+on sidebar coverage or hard-coded locale prefixes. The importer validates every
+shard and URL record, requires canonical static Starlight content for every
+selected route, and rejects redirects, repeated entries, malformed records,
+ambiguous locale metadata, or client-only shells before publication.
 
 ### OpenAPI 3 JSON/YAML
 

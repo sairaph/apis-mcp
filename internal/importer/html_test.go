@@ -51,3 +51,44 @@ func TestVitePressStartInventoryAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectAstroStarlightGenerator(t *testing.T) {
+	for _, test := range []struct {
+		generator string
+		want      string
+	}{
+		{generator: "Starlight v0.41.4", want: "astro-starlight"},
+		{generator: "Starlight v1.0.0-beta.1+build.2", want: "astro-starlight"},
+		{generator: "Astro v7.0.2"},
+		{generator: "Starlight"},
+	} {
+		document, err := parseHTML([]byte(`<!doctype html><html><head><meta name="generator" content="` + test.generator + `"></head><body></body></html>`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := detectHTMLFramework(document); got != test.want {
+			t.Errorf("generator %q: got %q, want %q", test.generator, got, test.want)
+		}
+	}
+}
+
+func TestStarlightSitemapRecordUsesHreflangIdentity(t *testing.T) {
+	pageURL, err := url.Parse("https://docs.test/guide/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	locale := starlightLocaleScope{language: "en", root: "/", excluded: []string{"/es/"}}
+	alternates := []starlightSitemapAlternate{
+		{Rel: "alternate", Language: "en", Href: "https://docs.test/guide/"},
+		{Rel: "alternate", Language: "de", Href: "https://docs.test/de/guide/"},
+		{Rel: "alternate", Language: "x-default", Href: "https://docs.test/guide/"},
+	}
+	selected, err := starlightSitemapRecordLocale(alternates, "https://docs.test/de/guide/", pageURL, "/", locale)
+	if err != nil || selected {
+		t.Fatalf("unadvertised locale selected: selected=%v err=%v", selected, err)
+	}
+	selected, err = starlightSitemapRecordLocale(alternates, "https://docs.test/guide/", pageURL, "/", locale)
+	if err != nil || !selected {
+		t.Fatalf("default locale not selected: selected=%v err=%v", selected, err)
+	}
+}
