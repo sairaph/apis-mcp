@@ -3,6 +3,7 @@ package importer
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -28,7 +30,7 @@ var (
 	docsifyObjectConfig    = regexp.MustCompile(`window\.\$docsify\s*=\s*\{`)
 	docsifyConfigAssign    = regexp.MustCompile(`window\.\$docsify\s*=`)
 	docsifyConfigMutation  = regexp.MustCompile(`window\.\$docsify\s*\.`)
-	docsifyConfigSpread    = regexp.MustCompile(`\.\.\.`)
+	docsifyStaticRepo      = regexp.MustCompile(`(?i)\brepo\s*:\s*(['"])(https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?)(['"])`)
 	docsifyObjectID        = regexp.MustCompile(`^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$`)
 )
 
@@ -38,11 +40,14 @@ const (
 )
 
 type docsifyGitHubSelection struct {
-	owner string
-	repo  string
-	ref   string
-	path  string
-	exact bool
+	owner           string
+	repo            string
+	ref             string
+	path            string
+	exact           bool
+	pagesDeployment bool
+	shellIdentity   string
+	shellURL        string
 }
 
 type docsifyGitHubFile struct {
@@ -224,17 +229,7 @@ func ImportDocsify(ctx context.Context, name, version, source string, options Op
 
 func docsifyGitHubSources(document *htmlNode, shellURL *url.URL) ([]docsifyGitHubSelection, error) {
 	queryBasePath := strings.TrimSpace(shellURL.Query().Get("basePath"))
-	var scripts strings.Builder
-	walkHTML(document, func(node *htmlNode) {
-		if node.tag == "script" && node.attrs["src"] == "" {
-			script := htmlNodeText(node)
-			if !strings.Contains(script, "window.$docsify") {
-				return
-			}
-			scripts.WriteString(script)
-			scripts.WriteByte('\n')
-		}
-	})
+	scripts := docsifyConfigScripts(document)
 	if queryBasePath != "" {
 		if len(shellURL.Query()["basePath"]) != 1 {
 			return nil, errors.New("Docsify requires exactly one GitHub-backed basePath query")
@@ -248,8 +243,8 @@ func docsifyGitHubSources(document *htmlNode, shellURL *url.URL) ([]docsifyGitHu
 		}
 		return []docsifyGitHubSelection{selection}, nil
 	}
-	code := docsifyJavaScriptWithoutComments(scripts.String())
-	if len(docsifyConfigAssign.FindAllStringIndex(code, -1)) != 1 || !docsifyObjectConfig.MatchString(code) || docsifyConfigMutation.MatchString(code) || docsifyConfigSpread.MatchString(code) {
+	code := docsifyJavaScriptWithoutComments(scripts)
+	if len(docsifyConfigAssign.FindAllStringIndex(code, -1)) != 1 || !docsifyObjectConfig.MatchString(code) || docsifyConfigMutation.MatchString(code) || docsifyHasJavaScriptSpread(code) {
 		return nil, errors.New("dynamic Docsify configuration has no complete static inventory")
 	}
 	var selections []docsifyGitHubSelection
@@ -270,7 +265,17 @@ func docsifyGitHubSources(document *htmlNode, shellURL *url.URL) ([]docsifyGitHu
 		selections = append(selections, docsifyURLSelection(match[1], match[2], match[3], match[4]))
 	}
 	for _, match := range docsifyGitHubRawURL.FindAllStringSubmatch(code, -1) {
-		selections = append(selections, docsifyURLSelection(match[1], match[2], match[3], match[4]))
+		selection := docsifyURLSelection(match[1], match[2], match[3], match[4])
+		isBasePath := false
+		for _, basePath := range staticBasePaths {
+			isBasePath = isBasePath || basePath[1] == match[0]
+		}
+		// Docsify appends .md after applying an extensionless raw route alias.
+		if !isBasePath && selection.path != "" && path.Ext(selection.path) == "" && !strings.HasSuffix(match[4], "/") {
+			selection.path += ".md"
+			selection.exact = true
+		}
+		selections = append(selections, selection)
 	}
 	for _, match := range docsifyJSDelivrURL.FindAllStringSubmatch(code, -1) {
 		mappedPath := match[4]
@@ -278,6 +283,19 @@ func docsifyGitHubSources(document *htmlNode, shellURL *url.URL) ([]docsifyGitHu
 			mappedPath = strings.TrimSuffix(strings.Split(mappedPath, "$1")[0], "/")
 		}
 		selections = append(selections, docsifyURLSelection(match[1], match[2], match[3], mappedPath))
+	}
+	explicitRoot := false
+	for _, selection := range selections {
+		explicitRoot = explicitRoot || !selection.exact
+	}
+	if !explicitRoot {
+		pagesSelection, foundPagesSelection, err := docsifyGitHubPagesSource(document, code, shellURL)
+		if err != nil {
+			return nil, err
+		}
+		if foundPagesSelection {
+			selections = append(selections, pagesSelection)
+		}
 	}
 	selections = uniqueDocsifySelections(selections)
 	if len(selections) > docsifyMaxSelections {
@@ -291,6 +309,156 @@ func docsifyGitHubSources(document *htmlNode, shellURL *url.URL) ([]docsifyGitHu
 		return nil, errors.New("Docsify shell has no uniquely enumerable GitHub source root")
 	}
 	return selections, nil
+}
+
+func docsifyConfigScripts(document *htmlNode) string {
+	var scripts strings.Builder
+	walkHTML(document, func(node *htmlNode) {
+		if node.tag == "script" && node.attrs["src"] == "" {
+			script := htmlNodeText(node)
+			if !strings.Contains(script, "window.$docsify") {
+				return
+			}
+			scripts.WriteString(script)
+			scripts.WriteByte('\n')
+		}
+	})
+	return scripts.String()
+}
+
+func docsifyHasJavaScriptSpread(value string) bool {
+	codePositions := docsifyJavaScriptCodePositions(value)
+	for index := 0; index+2 < len(value); index++ {
+		if value[index:index+3] == "..." && codePositions[index] && codePositions[index+1] && codePositions[index+2] {
+			return true
+		}
+	}
+	return false
+}
+
+func docsifyJavaScriptCodePositions(value string) []bool {
+	positions := make([]bool, len(value))
+	var quote byte
+	escaped, lineComment, blockComment := false, false, false
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		next := byte(0)
+		if index+1 < len(value) {
+			next = value[index+1]
+		}
+		switch {
+		case lineComment:
+			if character == '\n' {
+				lineComment = false
+				positions[index] = true
+			}
+		case blockComment:
+			if character == '*' && next == '/' {
+				blockComment = false
+				index++
+			}
+		case quote != 0:
+			if escaped {
+				escaped = false
+			} else if character == '\\' {
+				escaped = true
+			} else if character == quote {
+				quote = 0
+			}
+		case character == '/' && next == '/':
+			lineComment = true
+			index++
+		case character == '/' && next == '*':
+			blockComment = true
+			index++
+		case character == '\'' || character == '"' || character == '`':
+			quote = character
+		default:
+			positions[index] = true
+		}
+	}
+	return positions
+}
+
+func docsifyGitHubPagesSource(document *htmlNode, code string, shellURL *url.URL) (docsifyGitHubSelection, bool, error) {
+	host := strings.ToLower(shellURL.Hostname())
+	if !strings.HasSuffix(host, ".github.io") {
+		return docsifyGitHubSelection{}, false, nil
+	}
+	pageOwner := strings.TrimSuffix(host, ".github.io")
+	segments := strings.Split(strings.Trim(shellURL.Path, "/"), "/")
+	if len(segments) == 2 && strings.EqualFold(segments[1], "index.html") {
+		segments = segments[:1]
+	}
+	if !validGitHubComponent(pageOwner) || len(segments) != 1 || !validGitHubComponent(segments[0]) {
+		return docsifyGitHubSelection{}, false, nil
+	}
+
+	codePositions := docsifyJavaScriptCodePositions(code)
+	var repositories [][2]string
+	for _, match := range docsifyStaticRepo.FindAllStringSubmatchIndex(code, -1) {
+		if !codePositions[match[0]] || code[match[2]:match[3]] != code[match[6]:match[7]] {
+			continue
+		}
+		repositoryURL, err := url.Parse(code[match[4]:match[5]])
+		if err != nil || repositoryURL.RawQuery != "" || repositoryURL.Fragment != "" {
+			continue
+		}
+		parts := strings.Split(strings.Trim(repositoryURL.Path, "/"), "/")
+		if len(parts) != 2 {
+			continue
+		}
+		parts[1] = strings.TrimSuffix(parts[1], ".git")
+		if validGitHubComponent(parts[0]) && validGitHubComponent(parts[1]) {
+			repositories = append(repositories, [2]string{parts[0], parts[1]})
+		}
+	}
+	if len(repositories) == 0 {
+		return docsifyGitHubSelection{}, false, nil
+	}
+	if len(repositories) != 1 {
+		return docsifyGitHubSelection{}, false, errors.New("Docsify GitHub Pages repository is not uniquely enumerable")
+	}
+	owner, repo := repositories[0][0], repositories[0][1]
+	if !strings.EqualFold(owner, pageOwner) || !strings.EqualFold(repo, segments[0]) {
+		return docsifyGitHubSelection{}, false, nil
+	}
+	return docsifyGitHubSelection{
+		owner: owner, repo: repo, pagesDeployment: true,
+		shellIdentity: docsifyShellIdentity(document), shellURL: shellURL.String(),
+	}, true, nil
+}
+
+func docsifyShellIdentity(document *htmlNode) string {
+	var identity strings.Builder
+	var appendNode func(*htmlNode)
+	appendNode = func(node *htmlNode) {
+		if node.tag == "#comment" {
+			return
+		}
+		if node.tag == "" {
+			text := strings.TrimSpace(strings.ReplaceAll(node.text, "\r\n", "\n"))
+			identity.WriteString(strconv.Quote(text))
+			return
+		}
+		identity.WriteByte('<')
+		identity.WriteString(node.tag)
+		for _, key := range sortedKeys(node.attrs) {
+			identity.WriteByte(' ')
+			identity.WriteString(key)
+			identity.WriteByte('=')
+			identity.WriteString(strconv.Quote(strings.TrimSpace(node.attrs[key])))
+		}
+		identity.WriteByte('>')
+		for _, child := range node.children {
+			appendNode(child)
+		}
+		identity.WriteString("</")
+		identity.WriteString(node.tag)
+		identity.WriteByte('>')
+	}
+	appendNode(document)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity.String())))
 }
 
 func docsifyValidateQuerySources(query url.Values) error {
@@ -316,7 +484,8 @@ func docsifyJavaScriptWithoutComments(value string) string {
 	var quote rune
 	escaped, lineComment, blockComment := false, false, false
 	runes := []rune(value)
-	for index, character := range runes {
+	for index := 0; index < len(runes); index++ {
+		character := runes[index]
 		next := rune(0)
 		if index+1 < len(runes) {
 			next = runes[index+1]
@@ -330,6 +499,7 @@ func docsifyJavaScriptWithoutComments(value string) string {
 		case blockComment:
 			if character == '*' && next == '/' {
 				blockComment = false
+				index++
 			}
 		case quote != 0:
 			output.WriteRune(character)
@@ -342,8 +512,10 @@ func docsifyJavaScriptWithoutComments(value string) string {
 			}
 		case character == '/' && next == '/':
 			lineComment = true
+			index++
 		case character == '/' && next == '*':
 			blockComment = true
+			index++
 		case character == '\'' || character == '"' || character == '`':
 			quote = character
 			output.WriteRune(character)
@@ -399,7 +571,7 @@ func uniqueDocsifySelections(values []docsifyGitHubSelection) []docsifyGitHubSel
 	seen := make(map[string]bool)
 	var unique []docsifyGitHubSelection
 	for _, value := range values {
-		key := value.owner + "\x00" + value.repo + "\x00" + value.ref + "\x00" + value.path + fmt.Sprint(value.exact)
+		key := value.owner + "\x00" + value.repo + "\x00" + value.ref + "\x00" + value.path + fmt.Sprint(value.exact, value.pagesDeployment)
 		if !seen[key] {
 			seen[key] = true
 			unique = append(unique, value)
@@ -494,7 +666,20 @@ func docsifyResolveSelectionRefs(ctx context.Context, selections []docsifyGitHub
 	invalid := make(map[docsifyRepositoryKey]bool)
 	resolved := make([]docsifyGitHubSelection, 0, len(selections))
 	for _, selection := range selections {
-		if !validGitHubComponent(selection.owner) || !validGitHubComponent(selection.repo) || !validGitHubRef(selection.ref) || !safeRepositoryPath(selection.path) {
+		if !validGitHubComponent(selection.owner) || !validGitHubComponent(selection.repo) || !safeRepositoryPath(selection.path) {
+			return nil, nil, fmt.Errorf("invalid GitHub source selection %q", selection.owner+"/"+selection.repo+"@"+selection.ref+"/"+selection.path)
+		}
+		if selection.pagesDeployment {
+			pagesSelection, snapshot, resolveErr := docsifyResolveGitHubPagesDeployment(ctx, selection, reader)
+			if resolveErr != nil {
+				return nil, nil, resolveErr
+			}
+			key := docsifyRepositoryKey{owner: pagesSelection.owner, repo: pagesSelection.repo, ref: pagesSelection.ref}
+			snapshots[key] = snapshot
+			resolved = append(resolved, pagesSelection)
+			continue
+		}
+		if !validGitHubRef(selection.ref) {
 			return nil, nil, fmt.Errorf("invalid GitHub source selection %q", selection.owner+"/"+selection.repo+"@"+selection.ref+"/"+selection.path)
 		}
 		parts := []string(nil)
@@ -555,6 +740,90 @@ func docsifyResolveSelectionRefs(ctx context.Context, selections []docsifyGitHub
 		}
 	}
 	return uniqueDocsifySelections(resolved), snapshots, nil
+}
+
+func docsifyResolveGitHubPagesDeployment(ctx context.Context, selection docsifyGitHubSelection, reader *sourceReader) (docsifyGitHubSelection, docsifyGitHubSnapshot, error) {
+	deploymentsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/deployments?environment=github-pages&per_page=1", selection.owner, selection.repo)
+	rawDeployments, _, err := reader.readFromOrigin(ctx, deploymentsURL, nil, "https://api.github.com")
+	if err != nil {
+		return docsifyGitHubSelection{}, docsifyGitHubSnapshot{}, fmt.Errorf("resolve GitHub Pages deployment %s/%s: %w", selection.owner, selection.repo, err)
+	}
+	var deployments []struct {
+		ID  int64  `json:"id"`
+		SHA string `json:"sha"`
+		Ref string `json:"ref"`
+	}
+	if json.Unmarshal(rawDeployments, &deployments) != nil || len(deployments) != 1 || deployments[0].ID <= 0 || !docsifyObjectID.MatchString(deployments[0].SHA) || !validGitHubRef(deployments[0].Ref) {
+		return docsifyGitHubSelection{}, docsifyGitHubSnapshot{}, fmt.Errorf("GitHub repository %s/%s has no valid Pages deployment", selection.owner, selection.repo)
+	}
+	deployment := deployments[0]
+	statusesURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/deployments/%d/statuses?per_page=1", selection.owner, selection.repo, deployment.ID)
+	rawStatuses, _, err := reader.readFromOrigin(ctx, statusesURL, nil, "https://api.github.com")
+	if err != nil {
+		return docsifyGitHubSelection{}, docsifyGitHubSnapshot{}, fmt.Errorf("verify GitHub Pages deployment %s/%s: %w", selection.owner, selection.repo, err)
+	}
+	var statuses []struct {
+		State          string `json:"state"`
+		EnvironmentURL string `json:"environment_url"`
+	}
+	if json.Unmarshal(rawStatuses, &statuses) != nil || len(statuses) != 1 || statuses[0].State != "success" || !docsifySameDeploymentURL(statuses[0].EnvironmentURL, selection.shellURL) {
+		return docsifyGitHubSelection{}, docsifyGitHubSnapshot{}, fmt.Errorf("GitHub repository %s/%s has no successful deployment for the Docsify URL", selection.owner, selection.repo)
+	}
+
+	commitURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", selection.owner, selection.repo, deployment.SHA)
+	rawCommit, _, err := reader.readFromOrigin(ctx, commitURL, nil, "https://api.github.com")
+	if err != nil {
+		return docsifyGitHubSelection{}, docsifyGitHubSnapshot{}, fmt.Errorf("resolve GitHub Pages commit %s/%s@%s: %w", selection.owner, selection.repo, deployment.SHA, err)
+	}
+	var commit struct {
+		SHA    string `json:"sha"`
+		Commit struct {
+			Tree struct {
+				SHA string `json:"sha"`
+			} `json:"tree"`
+		} `json:"commit"`
+	}
+	if json.Unmarshal(rawCommit, &commit) != nil || commit.SHA != deployment.SHA || !docsifyObjectID.MatchString(commit.Commit.Tree.SHA) {
+		return docsifyGitHubSelection{}, docsifyGitHubSnapshot{}, fmt.Errorf("GitHub Pages commit %s/%s@%s has no immutable tree", selection.owner, selection.repo, deployment.SHA)
+	}
+
+	var matchingRoots []string
+	for _, root := range []string{"", "docs"} {
+		indexPath := path.Join(root, "index.html")
+		sourceURL := docsifyRawGitHubURL(docsifyGitHubFile{owner: selection.owner, repo: selection.repo, commit: deployment.SHA, path: indexPath})
+		raw, resolved, readErr := reader.readFromOrigin(ctx, sourceURL, nil, "https://raw.githubusercontent.com")
+		if readErr != nil {
+			if strings.Contains(readErr.Error(), "HTTP 404") {
+				continue
+			}
+			return docsifyGitHubSelection{}, docsifyGitHubSnapshot{}, fmt.Errorf("verify GitHub Pages shell %s: %w", sourceURL, readErr)
+		}
+		if resolved != sourceURL {
+			return docsifyGitHubSelection{}, docsifyGitHubSnapshot{}, fmt.Errorf("GitHub Pages shell redirected: %s", sourceURL)
+		}
+		document, parseErr := parseHTML(bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf}))
+		if parseErr == nil && isHTMLDocument(document) && looksLikeDocsify(document) && docsifyShellIdentity(document) == selection.shellIdentity {
+			matchingRoots = append(matchingRoots, root)
+		}
+	}
+	if len(matchingRoots) != 1 {
+		return docsifyGitHubSelection{}, docsifyGitHubSnapshot{}, fmt.Errorf("GitHub Pages deployment %s/%s@%s has %d matching repository source roots", selection.owner, selection.repo, deployment.SHA, len(matchingRoots))
+	}
+	selection.ref = deployment.SHA
+	selection.path = matchingRoots[0]
+	selection.pagesDeployment = false
+	selection.shellIdentity = ""
+	selection.shellURL = ""
+	return selection, docsifyGitHubSnapshot{commit: deployment.SHA, tree: commit.Commit.Tree.SHA}, nil
+}
+
+func docsifySameDeploymentURL(deployed, shell string) bool {
+	deployedURL, deployedErr := url.Parse(deployed)
+	shellURL, shellErr := url.Parse(shell)
+	if deployedErr != nil || shellErr != nil || deployedURL.User != nil || shellURL.User != nil || !sameOrigin(deployedURL, shellURL) {
+		return false
+	}
+	return normalizeDocumentationRoot(deployedURL.Path) == normalizeDocumentationRoot(shellURL.Path)
 }
 
 func sortedRepositoryKeys[V any](values map[docsifyRepositoryKey]V) []docsifyRepositoryKey {

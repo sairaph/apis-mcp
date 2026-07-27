@@ -17,7 +17,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -28,7 +30,23 @@ const (
 	DefaultMaxSourceBytes = int64(16 << 20)
 	DefaultMaxTotalBytes  = int64(64 << 20)
 	defaultMaxFiles       = 2_000
+	sourceReadAttempts    = 3
+	sourceReadRetryDelay  = 25 * time.Millisecond
+	sourceReadMaxRetry    = time.Second
+	sourceReadDrainLimit  = int64(64 << 10)
 )
+
+// ErrSourceTooLarge identifies a source that exceeds its configured byte limit.
+var ErrSourceTooLarge = errors.New("source exceeds configured byte limit")
+
+type sourceTooLargeError struct {
+	limit int64
+}
+
+func (err sourceTooLargeError) Error() string {
+	return fmt.Sprintf("source exceeds %d bytes", err.limit)
+}
+func (sourceTooLargeError) Unwrap() error { return ErrSourceTooLarge }
 
 // Options controls source access and publication. Rebuild must validate and
 // atomically publish the library index rooted at LibraryRoot.
@@ -125,6 +143,7 @@ type sourceReader struct {
 	perSource   int64
 	total       int64
 	used        int64
+	retryWait   func(context.Context, time.Duration) error
 }
 
 // ImportMarkdown imports a canonical document-set directory whose root
@@ -304,20 +323,52 @@ func (reader *sourceReader) readFromOrigin(ctx context.Context, source string, b
 			}
 			client = &clone
 		}
-		response, err := client.Do(request)
-		if err != nil {
-			return nil, "", fmt.Errorf("fetch %s: %w", resolved, err)
-		}
-		defer response.Body.Close()
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return nil, "", fmt.Errorf("fetch %s: HTTP %d", resolved, response.StatusCode)
-		}
-		raw, err = readLimited(response.Body, reader.perSource)
-		if err != nil {
-			return nil, "", fmt.Errorf("fetch %s: %w", resolved, err)
-		}
-		if response.Request != nil && response.Request.URL != nil {
-			resolved = response.Request.URL.String()
+		for attempt := 0; attempt < sourceReadAttempts; attempt++ {
+			response, requestErr := client.Do(request.Clone(ctx))
+			if requestErr != nil {
+				closeSourceResponse(response)
+				if attempt+1 == sourceReadAttempts || response != nil || ctx.Err() != nil || errors.Is(requestErr, context.Canceled) {
+					return nil, "", fmt.Errorf("fetch %s: %w", resolved, requestErr)
+				}
+				if waitErr := reader.waitForRetry(ctx, sourceRetryDelay(attempt, "")); waitErr != nil {
+					return nil, "", fmt.Errorf("fetch %s: %w", resolved, waitErr)
+				}
+				continue
+			}
+
+			if response.StatusCode < 200 || response.StatusCode >= 300 {
+				statusCode := response.StatusCode
+				delay := sourceRetryDelay(attempt, response.Header.Get("Retry-After"))
+				closeSourceResponse(response)
+				if attempt+1 == sourceReadAttempts || !transientSourceStatus(statusCode) {
+					return nil, "", fmt.Errorf("fetch %s: HTTP %d", resolved, statusCode)
+				}
+				if waitErr := reader.waitForRetry(ctx, delay); waitErr != nil {
+					return nil, "", fmt.Errorf("fetch %s: %w", resolved, waitErr)
+				}
+				continue
+			}
+
+			responseURL := ""
+			if response.Request != nil && response.Request.URL != nil {
+				responseURL = response.Request.URL.String()
+			}
+			raw, err = readLimited(response.Body, reader.perSource)
+			closeSourceResponse(response)
+			if err != nil {
+				raw = nil
+				if attempt+1 == sourceReadAttempts || !transientSourceBodyError(ctx, err) {
+					return nil, "", fmt.Errorf("fetch %s: %w", resolved, err)
+				}
+				if waitErr := reader.waitForRetry(ctx, sourceRetryDelay(attempt, "")); waitErr != nil {
+					return nil, "", fmt.Errorf("fetch %s: %w", resolved, waitErr)
+				}
+				continue
+			}
+			if responseURL != "" {
+				resolved = responseURL
+			}
+			break
 		}
 	} else {
 		raw, err = readLimitedFile(resolved, reader.perSource)
@@ -330,6 +381,89 @@ func (reader *sourceReader) readFromOrigin(ctx context.Context, source string, b
 		return nil, "", fmt.Errorf("documentation import exceeds %d total source bytes", reader.total)
 	}
 	return raw, resolved, nil
+}
+
+func transientSourceStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusInternalServerError,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func transientSourceBodyError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || errors.Is(err, ErrSourceTooLarge) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary()) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "stream error: stream id") ||
+		strings.Contains(message, "http2: client connection lost") ||
+		strings.Contains(message, "http2: server sent goaway")
+}
+
+func sourceRetryDelay(attempt int, retryAfter string) time.Duration {
+	if delay, ok := parseSourceRetryAfter(retryAfter, time.Now()); ok {
+		return delay
+	}
+	return sourceReadRetryDelay << attempt
+}
+
+func parseSourceRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+		if seconds >= int64(sourceReadMaxRetry/time.Second) {
+			return sourceReadMaxRetry, true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	delay := when.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	return min(delay, sourceReadMaxRetry), true
+}
+
+func (reader *sourceReader) waitForRetry(ctx context.Context, delay time.Duration) error {
+	if reader.retryWait != nil {
+		return reader.retryWait(ctx, delay)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func closeSourceResponse(response *http.Response) {
+	if response == nil || response.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, sourceReadDrainLimit))
+	_ = response.Body.Close()
 }
 
 func httpOrigin(parsed *url.URL) string {
@@ -632,7 +766,7 @@ func readLimited(reader io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(raw)) > limit {
-		return nil, fmt.Errorf("source exceeds %d bytes", limit)
+		return nil, sourceTooLargeError{limit: limit}
 	}
 	return raw, nil
 }

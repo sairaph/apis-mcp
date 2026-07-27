@@ -24,7 +24,7 @@ const (
 	DefaultMaxHTMLPages = 50
 	DefaultMaxHTMLDepth = 3
 	maxHTMLTreeDepth    = 128
-	maxHTMLNodes        = 50_000
+	maxHTMLNodes        = 250_000
 	maxHTMLSitemapURLs  = 20_000
 )
 
@@ -41,6 +41,7 @@ var (
 	sphinxLinkSuffixOption  = regexp.MustCompile(`(?m)\bLINK_SUFFIX\s*:\s*['"]([^'"]*)['"]`)
 	vitepressGenerator      = regexp.MustCompile(`(?i)^vitepress v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9a-z.-]+)?(?:\+[0-9a-z.-]+)?$`)
 	starlightGenerator      = regexp.MustCompile(`(?i)^starlight v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9a-z.-]+)?(?:\+[0-9a-z.-]+)?$`)
+	htmlLocalePrefix        = regexp.MustCompile(`^[a-z]{2,3}(?:-[A-Z]{2}|-[0-9]{3})?$`)
 )
 
 type htmlNode struct {
@@ -100,24 +101,50 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 	if err != nil || start.Host == "" || start.User != nil || start.Scheme != "http" && start.Scheme != "https" {
 		return Result{}, errors.New("HTML import source must be an HTTP(S) URL")
 	}
+	startHadFragment := start.Fragment != "" || start.RawFragment != ""
 	start.Fragment = ""
+	start.RawFragment = ""
 	scopePath := "/"
 	if options.HTMLScope == "path" {
 		scopePath = documentationPathScope(start.Path)
 	}
 	var finiteInventory map[string]bool
+	inventoryPathScope := ""
+	initialLocaleRedirected := false
 
 	// A same-origin link must not escape through an HTTP redirect either.
 	client := *options.HTTPClient
 	previousRedirectPolicy := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if request.URL.User != nil || !sameOrigin(start, request.URL) || options.HTMLScope == "path" && !withinDocumentationPath(request.URL.Path, scopePath) {
+		redirectURL := request.URL
+		if redirectURL != nil && !redirectURL.IsAbs() && len(via) > 0 {
+			redirectURL = via[len(via)-1].URL.ResolveReference(redirectURL)
+		}
+		if redirectURL == nil || redirectURL.User != nil || !sameOrigin(start, redirectURL) {
+			return errors.New("HTML crawl redirect crosses the source origin")
+		}
+		pathAllowed := options.HTMLScope != "path" || withinDocumentationPath(redirectURL.Path, scopePath)
+		if !pathAllowed && finiteInventory != nil && inventoryPathScope != "" {
+			canonical, canonicalErr := canonicalHTTPURL(redirectURL.String())
+			pathAllowed = canonicalErr == nil && finiteInventory[canonical] && withinDocumentationPath(redirectURL.Path, inventoryPathScope)
+		}
+		if !pathAllowed && finiteInventory == nil && !initialLocaleRedirected && !startHadFragment && len(via) == 1 && initialHTMLLocaleRedirect(start, redirectURL) {
+			scopePath = documentationPathScope(redirectURL.Path)
+			initialLocaleRedirected = true
+			pathAllowed = true
+		}
+		if !pathAllowed {
 			return errors.New("HTML crawl redirect crosses the source origin")
 		}
 		if finiteInventory != nil {
-			canonical, err := canonicalHTTPURL(request.URL.String())
-			if err != nil || !finiteInventory[canonical] {
+			canonical, err := canonicalHTTPURL(redirectURL.String())
+			if err != nil {
 				return errors.New("HTML crawl redirect crosses the finite inventory")
+			}
+			if !finiteInventory[canonical] {
+				if len(via) == 0 || !deterministicHTMLRouteAlias(via[0].URL, redirectURL) {
+					return errors.New("HTML crawl redirect crosses the finite inventory")
+				}
 			}
 		}
 		if previousRedirectPolicy != nil {
@@ -147,7 +174,14 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 	rootFramework := ""
 	fetchedInventory := make(map[string]bool)
 	generatedInventory := make(map[string]bool)
+	excludedInventory := make(map[string]bool)
 	inventoryAliases := make(map[string]string)
+	redirectAliasTargets := make(map[string]string)
+	selectedStarlightLocale := starlightLocaleScope{}
+	starlightMonolingual := false
+	docusaurusQueuedRoutes := make(map[string]string)
+	docusaurusGeneratedRoutes := make(map[string]string)
+	var sitemapExclusions []string
 	crawlRequests := 0
 	crawlLimited := false
 	var crawlErrors []error
@@ -179,14 +213,32 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				fetchedInventory[canonicalPending] = true
 			}
 			canonicalProvenance, canonicalErr := canonicalHTTPURL(provenance)
-			if canonicalErr != nil || !finiteInventory[canonicalProvenance] || !withinDocumentationPath(pageURL.Path, scopePath) {
+			pathAllowed := withinDocumentationPath(pageURL.Path, scopePath)
+			if !pathAllowed && starlightMonolingual && inventoryPathScope != "" {
+				pathAllowed = canonicalErr == nil && finiteInventory[canonicalPending] && withinDocumentationPath(pageURL.Path, inventoryPathScope)
+			}
+			if canonicalErr != nil || !pathAllowed {
 				return Result{}, fmt.Errorf("%s crawl did not complete: inventory entry %s redirected outside its finite inventory", rootFramework, pending.source)
 			}
-			if canonicalErr == nil && canonicalPending != canonicalProvenance {
+			if !finiteInventory[canonicalProvenance] {
+				pendingURL, pendingErr := url.Parse(canonicalPending)
+				if pendingErr != nil || !deterministicHTMLRouteAlias(pendingURL, pageURL) {
+					return Result{}, fmt.Errorf("%s crawl did not complete: inventory entry %s redirected outside its finite inventory", rootFramework, pending.source)
+				}
+				if owner, exists := redirectAliasTargets[canonicalProvenance]; exists && owner != canonicalPending {
+					return Result{}, fmt.Errorf("%s crawl did not complete: redirect alias %s is shared by multiple inventory entries", rootFramework, canonicalProvenance)
+				}
+				redirectAliasTargets[canonicalProvenance] = canonicalPending
+				inventoryAliases[canonicalProvenance] = canonicalPending
+				inventoryIdentity = canonicalPending
+			} else if canonicalPending != canonicalProvenance {
 				inventoryAliases[canonicalPending] = canonicalProvenance
 			}
 		}
 		if processed[provenance] {
+			if rootFramework == "docusaurus" && !docusaurusSlashAlias(pending.source, provenance) {
+				return Result{}, fmt.Errorf("docusaurus crawl did not complete: sidebar route %s collides with already processed page %s", pending.source, provenance)
+			}
 			continue
 		}
 		redirected, refreshErr := htmlRefreshRedirect(raw, pageURL)
@@ -207,6 +259,9 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				seen[canonicalRedirect] = true
 				queue = append([]pendingPage{{source: canonicalRedirect, depth: pending.depth + 1}}, queue...)
 				continue
+			}
+			if rootFramework == "astro-starlight" && starlightMonolingual {
+				return Result{}, fmt.Errorf("astro-starlight crawl did not complete: sitemap page %s redirects", provenance)
 			}
 			if canonicalErr != nil || !finiteInventory[canonicalRedirect] {
 				return Result{}, fmt.Errorf("%s crawl did not complete: page %s redirects outside its finite inventory", rootFramework, provenance)
@@ -245,11 +300,56 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				return Result{}, errors.New("Docsify source Markdown requires the Docsify importer")
 			}
 		} else if rootFramework != "" && view.framework != rootFramework {
+			if rootFramework == "astro-starlight" && starlightMonolingual && finiteInventory != nil && view.framework == "" {
+				if err := validateStarlightNonFrameworkExclusion(document, pageURL, pending.source, provenance, inventoryIdentity); err != nil {
+					return Result{}, fmt.Errorf("astro-starlight crawl did not complete: invalid non-framework sitemap page %s: %w", provenance, err)
+				}
+				excludedInventory[inventoryIdentity] = true
+				seen[provenance] = true
+				processed[provenance] = true
+				reportProgress(options, Progress{Stage: "excluded", Message: starlightInventoryProgress(len(fetchedInventory), len(finiteInventory), len(generatedInventory), len(excludedInventory)), Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)})
+				continue
+			}
 			crawlErrors = append(crawlErrors, fmt.Errorf("framework changed from %s to %s at %s", rootFramework, view.framework, provenance))
 			continue
 		}
 		if view.profileError != nil {
 			return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, view.profileError)
+		}
+		if len(pages) == 0 && rootFramework == "docusaurus" && options.HTMLScope == "path" {
+			documentationRoot, rootErr := docusaurusDocumentationRoot(document, pageURL)
+			if rootErr != nil {
+				return Result{}, fmt.Errorf("docusaurus crawl did not complete: %w", rootErr)
+			}
+			scopePath = documentationRoot
+		}
+		docusaurusIdentity := ""
+		docusaurusCanonical := ""
+		if rootFramework == "docusaurus" {
+			if !docusaurusSlashAlias(pending.source, provenance) {
+				return Result{}, fmt.Errorf("docusaurus crawl did not complete: sidebar route %s redirects to non-alias page %s", pending.source, provenance)
+			}
+			var canonicalErr error
+			docusaurusCanonical, docusaurusIdentity, canonicalErr = docusaurusPageIdentity(document, pageURL, scopePath)
+			if canonicalErr != nil {
+				return Result{}, fmt.Errorf("docusaurus crawl did not complete: page %s: %w", provenance, canonicalErr)
+			}
+			if previous, exists := docusaurusGeneratedRoutes[docusaurusIdentity]; exists {
+				if !docusaurusSlashAlias(previous, docusaurusCanonical) {
+					return Result{}, fmt.Errorf("docusaurus crawl did not complete: canonical route collision between %s and %s", previous, docusaurusCanonical)
+				}
+				seen[provenance] = true
+				processed[provenance] = true
+				reportProgress(options, Progress{Stage: "redirect", Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)})
+				continue
+			}
+			if previous, exists := docusaurusQueuedRoutes[docusaurusIdentity]; exists {
+				if !docusaurusSlashAlias(previous, pending.source) {
+					return Result{}, fmt.Errorf("docusaurus crawl did not complete: ambiguous sidebar aliases %s and %s", previous, pending.source)
+				}
+			} else {
+				docusaurusQueuedRoutes[docusaurusIdentity] = docusaurusCanonical
+			}
 		}
 		seen[provenance] = true
 		processed[provenance] = true
@@ -262,13 +362,23 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				siteRoot, inventoryErr = mkdocsSiteRoot(view, pageURL)
 				if inventoryErr == nil {
 					scopePath = siteRoot
-					inventory, inventoryErr = htmlSitemapInventory(ctx, "MkDocs", pageURL, siteRoot, siteRoot, reader)
+					inventory, inventoryErr = htmlSitemapInventory(ctx, "MkDocs", pageURL, siteRoot, siteRoot, reader, nil)
+				}
+				if inventoryErr == nil {
+					canonicalStart, canonicalErr := mkdocsInventoryURL(provenance)
+					if canonicalErr == nil && !containsString(inventory, canonicalStart) {
+						alias, aliasErr := vitepressStartInventoryAlias(pageURL, siteRoot, inventory)
+						if aliasErr == nil {
+							inventoryAliases[canonicalStart] = alias
+							inventoryIdentity = alias
+						}
+					}
 				}
 			case rootFramework == "vitepress":
 				siteRoot, inventoryErr = vitepressSiteRoot(document, pageURL)
 				if inventoryErr == nil {
 					scopePath = siteRoot
-					inventory, inventoryErr = htmlSitemapInventory(ctx, "VitePress", pageURL, siteRoot, siteRoot, reader)
+					inventory, inventoryErr = htmlSitemapInventory(ctx, "VitePress", pageURL, siteRoot, siteRoot, reader, nil)
 				}
 				if inventoryErr == nil {
 					canonicalStart, canonicalErr := mkdocsInventoryURL(provenance)
@@ -288,7 +398,9 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				}
 				if inventoryErr == nil {
 					scopePath = siteRoot
-					inventory, inventoryErr = htmlSitemapInventory(ctx, "Nextra", pageURL, deploymentRoot, siteRoot, reader)
+					inventory, inventoryErr = htmlSitemapInventory(ctx, "Nextra", pageURL, deploymentRoot, siteRoot, reader, func(source string) {
+						sitemapExclusions = append(sitemapExclusions, source)
+					})
 				}
 				if inventoryErr == nil {
 					canonicalStart, canonicalErr := mkdocsInventoryURL(provenance)
@@ -310,6 +422,11 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 				if inventoryErr == nil {
 					siteRoot = normalizeDocumentationRoot(path.Dir(sitemapURL.Path))
 					scopePath = localeScope.root
+					selectedStarlightLocale = localeScope
+					starlightMonolingual = !localeScope.multilingual
+					if starlightMonolingual {
+						inventoryPathScope = siteRoot
+					}
 					inventory, inventoryErr = starlightSitemapInventory(ctx, pageURL, sitemapURL, siteRoot, localeScope, reader)
 				}
 				if inventoryErr == nil {
@@ -400,6 +517,9 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			if canonicalErr != nil || canonical != inventoryIdentity {
 				return Result{}, fmt.Errorf("astro-starlight crawl did not complete: page %s has an invalid canonical URL", provenance)
 			}
+			if starlightMonolingual && !withinStarlightLocale(pageURL.Path, selectedStarlightLocale) {
+				return Result{}, fmt.Errorf("astro-starlight crawl did not complete: framework page %s is outside the static documentation scope %s", provenance, selectedStarlightLocale.root)
+			}
 		}
 		if rootFramework == "mdbook" {
 			pageRoot, _, rootErr := mdbookSiteRoot(document, pageURL)
@@ -411,6 +531,13 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		if rootFramework == "mdbook" {
 			if mdbookTitle := mdbookPageTitle(document); mdbookTitle != "" {
 				title = mdbookTitle
+			}
+			if strings.TrimSpace(markdown) == "" {
+				if alias, aliasErr := mdbookEmptyChapterAlias(document, pageURL, finiteInventory); aliasErr == nil {
+					inventoryAliases[inventoryIdentity] = alias
+					reportProgress(options, Progress{Stage: "redirect", Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)})
+					continue
+				}
 			}
 		}
 		if (rootFramework == "vitepress" || rootFramework == "nextra" || rootFramework == "astro-starlight" || rootFramework == "mdbook") && strings.TrimSpace(markdown) == "" {
@@ -426,16 +553,42 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 			title: title, description: htmlMetadataDescription(document),
 			source: provenance, markdown: markdown,
 		})
+		if docusaurusIdentity != "" {
+			docusaurusGeneratedRoutes[docusaurusIdentity] = docusaurusCanonical
+		}
 		if finiteInventory != nil {
 			if inventoryIdentity != "" {
 				generatedInventory[inventoryIdentity] = true
 			}
 		}
-		reportProgress(options, Progress{Stage: "page", Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)})
+		progress := Progress{Stage: "page", Framework: rootFramework, URL: provenance, Pages: len(pages), Queued: len(queue)}
+		if rootFramework == "astro-starlight" && starlightMonolingual && finiteInventory != nil {
+			progress.Message = starlightInventoryProgress(len(fetchedInventory), len(finiteInventory), len(generatedInventory), len(excludedInventory))
+		}
+		reportProgress(options, progress)
 
 		var linkedPages []string
 		if finiteInventory == nil {
 			linkedPages = htmlPageLinks(view.linkRoots, pageURL, options.HTMLScope, scopePath)
+		}
+		if rootFramework == "docusaurus" {
+			unique := linkedPages[:0]
+			for _, linked := range linkedPages {
+				identity, identityErr := docusaurusRouteIdentity(linked)
+				if identityErr != nil {
+					return Result{}, fmt.Errorf("docusaurus crawl did not complete: invalid sidebar route %s", linked)
+				}
+				if previous, exists := docusaurusQueuedRoutes[identity]; exists {
+					if !docusaurusSlashAlias(previous, linked) {
+						return Result{}, fmt.Errorf("docusaurus crawl did not complete: ambiguous sidebar aliases %s and %s", previous, linked)
+					}
+					seen[linked] = true
+					continue
+				}
+				docusaurusQueuedRoutes[identity] = linked
+				unique = append(unique, linked)
+			}
+			linkedPages = unique
 		}
 		if options.MaxHTMLDepth >= 0 && pending.depth >= options.MaxHTMLDepth {
 			for _, linked := range linkedPages {
@@ -464,6 +617,20 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		if err := validateInventoryAliases(inventoryAliases, generatedInventory); err != nil {
 			return Result{}, fmt.Errorf("%s crawl did not complete: %w", rootFramework, err)
 		}
+	}
+	if rootFramework == "nextra" && len(finiteInventory) > 0 && !crawlLimited && len(queue) == 0 {
+		total := len(finiteInventory) + len(sitemapExclusions)
+		accounted := len(fetchedInventory) + len(sitemapExclusions)
+		reportProgress(options, Progress{Stage: "inventory", Message: fmt.Sprintf("accounted %d of %d sitemap records: %d fetched pages, %d validated non-page exclusions", accounted, total, len(fetchedInventory), len(sitemapExclusions)), Framework: rootFramework, Pages: len(pages)})
+	}
+	if rootFramework == "astro-starlight" && starlightMonolingual && !crawlLimited && len(queue) == 0 {
+		if len(generatedInventory) == 0 {
+			return Result{}, errors.New("astro-starlight crawl did not complete: monolingual sitemap generated no Starlight pages")
+		}
+		if len(generatedInventory)+len(excludedInventory) != len(finiteInventory) {
+			return Result{}, fmt.Errorf("astro-starlight crawl did not complete: %d sitemap entries were generated and %d were excluded from %d fetched entries", len(generatedInventory), len(excludedInventory), len(finiteInventory))
+		}
+		reportProgress(options, Progress{Stage: "inventory", Message: starlightInventoryProgress(len(fetchedInventory), len(finiteInventory), len(generatedInventory), len(excludedInventory)), Framework: rootFramework, Pages: len(pages)})
 	}
 	if len(pages) == 0 {
 		return Result{}, errors.New("HTML crawl produced no pages")
@@ -754,6 +921,8 @@ func inspectHTMLDocument(root *htmlNode) htmlDocumentView {
 				view.content = firstHTMLChild(shell, "div")
 			}
 		} else if page := firstHTMLClass(root, "VPPage"); page != nil {
+			view.content = page
+		} else if page := firstHTMLAttribute(root, "id", "page-content"); page != nil && page.tag == "main" && hasHTMLClass(page, "page-content") && htmlAncestorAttribute(page, "id", "app") && firstHTMLClass(root, "App") != nil {
 			view.content = page
 		} else {
 			view.content = nil
@@ -1047,6 +1216,126 @@ func commonDocumentationRoot(paths []string) string {
 	return "/" + strings.Join(common, "/") + "/"
 }
 
+func docusaurusDocumentationRoot(document *htmlNode, pageURL *url.URL) (string, error) {
+	originalRoot := documentationPathScope(pageURL.Path)
+	if originalRoot == "/" {
+		return "", errors.New("Docusaurus starting path does not define a non-root documentation section")
+	}
+	cleanedStart := path.Clean("/" + strings.TrimPrefix(pageURL.Path, "/"))
+	segments := strings.Split(strings.Trim(cleanedStart, "/"), "/")
+	if len(segments) == 0 || segments[0] == "" {
+		return "", errors.New("Docusaurus starting path does not define a static documentation section")
+	}
+	sectionBoundary := "/" + segments[0] + "/"
+	menus := htmlClasses(document, "theme-doc-sidebar-menu")
+	if len(menus) == 0 {
+		return originalRoot, nil
+	}
+	currentIdentity, err := docusaurusRouteIdentity(pageURL.String())
+	if err != nil {
+		return "", errors.New("Docusaurus starting page has an invalid route")
+	}
+	routes := make(map[string]string)
+	paths := []string{pageURL.Path}
+	hasSibling := false
+	var routeErr error
+	for _, menu := range menus {
+		walkHTML(menu, func(node *htmlNode) {
+			if routeErr != nil || node.tag != "a" {
+				return
+			}
+			linked, parseErr := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+			if parseErr != nil || linked.User != nil || !sameOrigin(pageURL, linked) || !likelyHTMLPath(linked.Path) || !withinDocumentationPath(linked.Path, sectionBoundary) {
+				return
+			}
+			linked.Fragment = ""
+			linked.RawFragment = ""
+			canonical, canonicalErr := canonicalHTTPURL(linked.String())
+			identity, identityErr := docusaurusRouteIdentity(canonical)
+			if canonicalErr != nil || identityErr != nil {
+				return
+			}
+			if previous, exists := routes[identity]; exists {
+				if !docusaurusSlashAlias(previous, canonical) {
+					routeErr = fmt.Errorf("ambiguous Docusaurus sidebar aliases %s and %s", previous, canonical)
+				}
+				return
+			}
+			routes[identity] = canonical
+			if identity != currentIdentity {
+				hasSibling = true
+				paths = append(paths, linked.Path)
+			}
+		})
+	}
+	if routeErr != nil {
+		return "", routeErr
+	}
+	if !hasSibling {
+		return originalRoot, nil
+	}
+	root := commonDocumentationRoot(paths)
+	if root == "" || root == "/" || !withinDocumentationPath(pageURL.Path, root) {
+		return "", errors.New("Docusaurus sidebar does not define an unambiguous non-root documentation section")
+	}
+	return root, nil
+}
+
+func docusaurusPageIdentity(document *htmlNode, pageURL *url.URL, documentationRoot string) (string, string, error) {
+	pageCanonical, err := canonicalHTTPURL(pageURL.String())
+	if err != nil {
+		return "", "", errors.New("invalid page URL")
+	}
+	canonical := ""
+	canonicalLinks := 0
+	var canonicalErr error
+	walkHTML(document, func(node *htmlNode) {
+		if node.tag != "link" || !hasHTMLToken(node.attrs["rel"], "canonical") {
+			return
+		}
+		canonicalLinks++
+		linked, parseErr := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+		if parseErr != nil || linked.User != nil || linked.Scheme != "http" && linked.Scheme != "https" || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || linked.ForceQuery || linked.Fragment != "" || linked.RawFragment != "" || !likelyHTMLPath(linked.Path) || !withinDocumentationPath(linked.Path, documentationRoot) {
+			canonicalErr = errors.New("invalid canonical URL")
+			return
+		}
+		canonical, canonicalErr = canonicalHTTPURL(linked.String())
+	})
+	if canonicalErr != nil || canonicalLinks > 1 {
+		return "", "", errors.New("page has no unambiguous same-origin canonical URL")
+	}
+	if canonicalLinks == 0 {
+		canonical = pageCanonical
+	}
+	pageIdentity, pageErr := docusaurusRouteIdentity(pageCanonical)
+	canonicalIdentity, identityErr := docusaurusRouteIdentity(canonical)
+	if pageErr != nil || identityErr != nil || pageIdentity != canonicalIdentity {
+		return "", "", errors.New("canonical URL is not a trailing-slash alias of the page")
+	}
+	return canonical, canonicalIdentity, nil
+}
+
+func docusaurusRouteIdentity(value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" || parsed.Fragment != "" || parsed.RawFragment != "" || parsed.RawPath != "" {
+		return "", errors.New("invalid Docusaurus route")
+	}
+	cleaned := path.Clean("/" + strings.TrimPrefix(parsed.Path, "/"))
+	if cleaned != parsed.Path && parsed.Path != strings.TrimSuffix(cleaned, "/")+"/" && !(cleaned == "/" && parsed.Path == "") {
+		return "", errors.New("invalid Docusaurus route path")
+	}
+	return httpOrigin(parsed) + strings.TrimSuffix(cleaned, "/"), nil
+}
+
+func docusaurusSlashAlias(first, second string) bool {
+	firstURL, firstErr := url.Parse(first)
+	secondURL, secondErr := url.Parse(second)
+	if firstErr != nil || secondErr != nil || firstURL.User != nil || secondURL.User != nil || !sameOrigin(firstURL, secondURL) || firstURL.RawQuery != secondURL.RawQuery || firstURL.Fragment != "" || secondURL.Fragment != "" {
+		return false
+	}
+	return strings.TrimSuffix(firstURL.Path, "/") == strings.TrimSuffix(secondURL.Path, "/")
+}
+
 func normalizeDocumentationRoot(value string) string {
 	directory := strings.HasSuffix(value, "/")
 	cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
@@ -1059,7 +1348,7 @@ func normalizeDocumentationRoot(value string) string {
 	return strings.TrimSuffix(cleaned, "/") + "/"
 }
 
-func htmlSitemapInventory(ctx context.Context, framework string, pageURL *url.URL, siteRoot, documentationRoot string, reader *sourceReader) ([]string, error) {
+func htmlSitemapInventory(ctx context.Context, framework string, pageURL *url.URL, siteRoot, documentationRoot string, reader *sourceReader, accountExclusion func(string)) ([]string, error) {
 	sitemap := *pageURL
 	sitemap.Path = path.Join(siteRoot, "sitemap.xml")
 	sitemap.RawPath = ""
@@ -1069,36 +1358,119 @@ func htmlSitemapInventory(ctx context.Context, framework string, pageURL *url.UR
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s sitemap %s: %w", framework, sitemap.String(), err)
 	}
-	var document struct {
-		Locations []string `xml:"url>loc"`
+	type sitemapURLRecord struct {
+		Locations  []string                    `xml:"loc"`
+		Alternates []starlightSitemapAlternate `xml:"link"`
 	}
+	type sitemapDocument struct {
+		XMLName  xml.Name
+		URLs     []sitemapURLRecord `xml:"url"`
+		Sitemaps []struct {
+			Locations []string `xml:"loc"`
+		} `xml:"sitemap"`
+	}
+	var document sitemapDocument
 	if err := xml.Unmarshal(raw, &document); err != nil {
 		return nil, fmt.Errorf("parse %s sitemap %s: %w", framework, provenance, err)
 	}
-	if len(document.Locations) == 0 {
-		return nil, fmt.Errorf("%s sitemap %s contains no URLs", framework, provenance)
+	records := document.URLs
+	switch document.XMLName.Local {
+	case "urlset":
+		if len(records) == 0 || len(document.Sitemaps) != 0 {
+			return nil, fmt.Errorf("%s sitemap %s contains no URLs", framework, provenance)
+		}
+	case "sitemapindex":
+		if len(records) != 0 || len(document.Sitemaps) == 0 || len(document.Sitemaps) > maxHTMLSitemapURLs {
+			return nil, fmt.Errorf("%s sitemap index %s has an invalid shard count", framework, provenance)
+		}
+		seenShards := make(map[string]bool, len(document.Sitemaps))
+		for index, shard := range document.Sitemaps {
+			if len(shard.Locations) != 1 {
+				return nil, fmt.Errorf("%s sitemap index %s contains invalid shard record at position %d", framework, provenance, index)
+			}
+			shardURL, parseErr := url.Parse(strings.TrimSpace(shard.Locations[0]))
+			if parseErr != nil || shardURL.Scheme != "http" && shardURL.Scheme != "https" || shardURL.Host == "" || shardURL.RawQuery != "" || shardURL.Fragment != "" || !sameOrigin(pageURL, shardURL) || !withinDocumentationPath(shardURL.Path, siteRoot) {
+				return nil, fmt.Errorf("%s sitemap index %s contains invalid shard at position %d", framework, provenance, index)
+			}
+			canonicalShard, canonicalErr := canonicalHTTPURL(shardURL.String())
+			if canonicalErr != nil || seenShards[canonicalShard] {
+				return nil, fmt.Errorf("%s sitemap index %s repeats a shard", framework, provenance)
+			}
+			seenShards[canonicalShard] = true
+			shardRaw, shardProvenance, readErr := reader.read(ctx, canonicalShard, nil)
+			if readErr != nil {
+				return nil, fmt.Errorf("fetch %s sitemap shard %s: %w", framework, canonicalShard, readErr)
+			}
+			actualShard, _ := canonicalHTTPURL(shardProvenance)
+			if actualShard != canonicalShard {
+				return nil, fmt.Errorf("%s sitemap shard %s redirected", framework, canonicalShard)
+			}
+			var shardDocument sitemapDocument
+			if unmarshalErr := xml.Unmarshal(shardRaw, &shardDocument); unmarshalErr != nil || shardDocument.XMLName.Local != "urlset" || len(shardDocument.URLs) == 0 || len(shardDocument.Sitemaps) != 0 {
+				return nil, fmt.Errorf("parse %s sitemap shard %s: invalid URL set", framework, shardProvenance)
+			}
+			records = append(records, shardDocument.URLs...)
+			if len(records) > maxHTMLSitemapURLs {
+				return nil, fmt.Errorf("%s sitemap %s exceeds %d URLs", framework, provenance, maxHTMLSitemapURLs)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("parse %s sitemap %s: unsupported sitemap document", framework, provenance)
 	}
-	if len(document.Locations) > maxHTMLSitemapURLs {
+	if len(records) > maxHTMLSitemapURLs {
 		return nil, fmt.Errorf("%s sitemap %s exceeds %d URLs", framework, provenance, maxHTMLSitemapURLs)
 	}
-	seen := make(map[string]bool, len(document.Locations))
-	urls := make([]string, 0, len(document.Locations))
-	for index, location := range document.Locations {
+	seenRecords := make(map[string]bool, len(records))
+	seenPages := make(map[string]bool, len(records))
+	urls := make([]string, 0, len(records))
+	for index, record := range records {
+		if len(record.Locations) != 1 {
+			return nil, fmt.Errorf("%s sitemap %s contains invalid URL record at position %d", framework, provenance, index)
+		}
+		location := record.Locations[0]
 		linked, err := url.Parse(strings.TrimSpace(location))
-		if err != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || linked.RawQuery != "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
+		if err != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || linked.RawQuery != "" || linked.Fragment != "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) {
 			return nil, fmt.Errorf("%s sitemap %s contains invalid URL at position %d", framework, provenance, index)
 		}
-		linked.Fragment = ""
 		canonical, err := canonicalHTTPURL(linked.String())
 		if err != nil {
 			return nil, fmt.Errorf("canonicalize %s sitemap URL %q: %w", framework, location, err)
 		}
-		if seen[canonical] {
+		if seenRecords[canonical] {
 			return nil, fmt.Errorf("%s sitemap %s repeats URL %s", framework, provenance, canonical)
 		}
-		seen[canonical] = true
+		seenRecords[canonical] = true
+		if !likelyHTMLPath(linked.Path) {
+			if framework != "Nextra" || accountExclusion == nil || !nextraSitemapNonPagePath(linked.Path) || len(record.Alternates) != 0 {
+				return nil, fmt.Errorf("%s sitemap %s contains unsupported non-page URL %s", framework, provenance, canonical)
+			}
+			accountExclusion(canonical)
+			continue
+		}
+		selected := ""
 		if withinDocumentationPath(linked.Path, documentationRoot) {
-			urls = append(urls, canonical)
+			selected = canonical
+		} else if len(record.Alternates) > 0 {
+			for _, alternate := range record.Alternates {
+				alternateURL, parseErr := url.Parse(strings.TrimSpace(alternate.Href))
+				if !strings.EqualFold(strings.TrimSpace(alternate.Rel), "alternate") || strings.TrimSpace(alternate.Language) == "" || parseErr != nil || alternateURL.Scheme != "http" && alternateURL.Scheme != "https" || alternateURL.Host == "" || alternateURL.RawQuery != "" || alternateURL.Fragment != "" || !sameOrigin(pageURL, alternateURL) || !withinDocumentationPath(alternateURL.Path, siteRoot) || !likelyHTMLPath(alternateURL.Path) {
+					return nil, fmt.Errorf("%s sitemap %s contains invalid alternate at position %d", framework, provenance, index)
+				}
+				if withinDocumentationPath(alternateURL.Path, documentationRoot) {
+					candidate, canonicalErr := canonicalHTTPURL(alternateURL.String())
+					if canonicalErr != nil || selected != "" && selected != candidate {
+						return nil, fmt.Errorf("%s sitemap %s contains ambiguous documentation alternates at position %d", framework, provenance, index)
+					}
+					selected = candidate
+				}
+			}
+		}
+		if selected != "" {
+			if seenPages[selected] {
+				return nil, fmt.Errorf("%s sitemap %s repeats selected URL %s", framework, provenance, selected)
+			}
+			seenPages[selected] = true
+			urls = append(urls, selected)
 		}
 	}
 	if len(urls) == 0 {
@@ -1162,11 +1534,13 @@ func starlightLocale(document *htmlNode, pageURL, sitemapURL *url.URL) (starligh
 	var alternatePaths []string
 	currentFound := false
 	currentLanguage := ""
+	alternateLinks := 0
 	var alternateErr error
 	walkHTML(document, func(node *htmlNode) {
 		if alternateErr != nil || node.tag != "link" || !hasHTMLToken(node.attrs["rel"], "alternate") {
 			return
 		}
+		alternateLinks++
 		language := strings.ToLower(strings.TrimSpace(node.attrs["hreflang"]))
 		if language == "x-default" {
 			return
@@ -1195,6 +1569,49 @@ func starlightLocale(document *htmlNode, pageURL, sitemapURL *url.URL) (starligh
 	})
 	if alternateErr != nil {
 		return starlightLocaleScope{}, alternateErr
+	}
+	if alternateLinks == 0 {
+		language := ""
+		if html := firstHTMLTag(document, "html"); html != nil {
+			language = strings.ToLower(strings.TrimSpace(html.attrs["lang"]))
+		}
+		if language == "" {
+			return starlightLocaleScope{}, errors.New("monolingual Astro Starlight page has no document language")
+		}
+		paths := []string{canonicalURL.Path}
+		uniquePaths := map[string]bool{path.Clean(canonicalURL.Path): true}
+		if sidebar := firstHTMLAttribute(document, "id", "starlight__sidebar"); sidebar != nil {
+			walkHTML(sidebar, func(node *htmlNode) {
+				if node.tag != "a" {
+					return
+				}
+				linked, parseErr := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+				if parseErr == nil && sameOrigin(pageURL, linked) && linked.RawQuery == "" && linked.Fragment == "" && withinDocumentationPath(linked.Path, siteRoot) && likelyHTMLPath(linked.Path) {
+					cleaned := path.Clean(linked.Path)
+					if !uniquePaths[cleaned] {
+						uniquePaths[cleaned] = true
+						paths = append(paths, linked.Path)
+					}
+				}
+			})
+		}
+		root := ""
+		candidateRoot := documentationPathScope(strings.TrimSuffix(canonicalURL.Path, "/"))
+		candidatePaths := make([]string, 0, len(paths))
+		for _, value := range paths {
+			if withinDocumentationPath(value, candidateRoot) {
+				candidatePaths = append(candidatePaths, value)
+			}
+		}
+		if len(candidatePaths) > 1 {
+			root = commonDocumentationRoot(candidatePaths)
+		} else {
+			root = commonDocumentationRoot(paths)
+		}
+		if root == "" || !withinDocumentationPath(canonicalURL.Path, root) {
+			return starlightLocaleScope{}, errors.New("monolingual Astro Starlight page has no static documentation root")
+		}
+		return starlightLocaleScope{language: language, root: root}, nil
 	}
 	if !currentFound || len(alternatePaths) == 0 {
 		return starlightLocaleScope{}, errors.New("Astro Starlight page has no valid hreflang alternate for its canonical URL")
@@ -1324,7 +1741,7 @@ func starlightSitemapInventory(ctx context.Context, pageURL, sitemapURL *url.URL
 			}
 			location := page.Locations[0]
 			linked, parseErr := url.Parse(strings.TrimSpace(location))
-			if parseErr != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || linked.RawQuery != "" || linked.Fragment != "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
+			if parseErr != nil || linked.Scheme != "http" && linked.Scheme != "https" || linked.Host == "" || linked.RawQuery != "" || linked.Fragment != "" || !sameOrigin(pageURL, linked) || !withinDocumentationPath(linked.Path, siteRoot) {
 				return nil, fmt.Errorf("Astro Starlight sitemap shard %s contains invalid URL at position %d", shardProvenance, pageIndex)
 			}
 			canonicalPage, canonicalErr := canonicalHTTPURL(linked.String())
@@ -1335,9 +1752,15 @@ func starlightSitemapInventory(ctx context.Context, pageURL, sitemapURL *url.URL
 			if len(seenPages) > maxHTMLSitemapURLs {
 				return nil, fmt.Errorf("Astro Starlight sitemap exceeds %d URLs", maxHTMLSitemapURLs)
 			}
-			selectedLocale, alternateErr := starlightSitemapRecordLocale(page.Alternates, canonicalPage, pageURL, siteRoot, locale)
-			if alternateErr != nil {
-				return nil, fmt.Errorf("Astro Starlight sitemap shard %s has invalid alternates at position %d: %w", shardProvenance, pageIndex, alternateErr)
+			if !likelyHTMLPath(linked.Path) {
+				continue
+			}
+			selectedLocale := !locale.multilingual && len(page.Alternates) == 0
+			if !selectedLocale {
+				selectedLocale, canonicalErr = starlightSitemapRecordLocale(page.Alternates, canonicalPage, pageURL, siteRoot, locale)
+				if canonicalErr != nil {
+					return nil, fmt.Errorf("Astro Starlight sitemap shard %s has invalid alternates at position %d: %w", shardProvenance, pageIndex, canonicalErr)
+				}
 			}
 			if selectedLocale {
 				inventory = append(inventory, canonicalPage)
@@ -1403,6 +1826,66 @@ func withinStarlightLocale(value string, locale starlightLocaleScope) bool {
 		}
 	}
 	return true
+}
+
+func validateStarlightNonFrameworkExclusion(document *htmlNode, pageURL *url.URL, requested, provenance, inventoryIdentity string) error {
+	requestedCanonical, requestedErr := canonicalHTTPURL(requested)
+	provenanceCanonical, provenanceErr := canonicalHTTPURL(provenance)
+	if requestedErr != nil || provenanceErr != nil || requestedCanonical != provenanceCanonical || provenanceCanonical != inventoryIdentity {
+		return errors.New("non-framework sitemap page redirected")
+	}
+	if !starlightFingerprintAbsent(document) {
+		return errors.New("page retains a Starlight fingerprint")
+	}
+	canonicalLinks := 0
+	canonical := ""
+	var canonicalErr error
+	walkHTML(document, func(node *htmlNode) {
+		if node.tag != "link" || !hasHTMLToken(node.attrs["rel"], "canonical") {
+			return
+		}
+		canonicalLinks++
+		linked, err := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+		if err != nil || linked.User != nil || linked.Scheme != "http" && linked.Scheme != "https" || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || linked.ForceQuery || linked.Fragment != "" || linked.RawFragment != "" {
+			canonicalErr = errors.New("page has an invalid canonical URL")
+			return
+		}
+		canonical, canonicalErr = canonicalHTTPURL(linked.String())
+	})
+	if canonicalErr != nil || canonicalLinks != 1 || canonical != provenanceCanonical {
+		return errors.New("page has no unique self-canonical same-origin URL")
+	}
+	body := firstHTMLTag(document, "body")
+	if body == nil {
+		return errors.New("page has no static body")
+	}
+	_, markdown := htmlToMarkdown(body, pageURL, false)
+	if strings.TrimSpace(markdown) == "" {
+		return errors.New("page has no statically rendered content")
+	}
+	return nil
+}
+
+func starlightFingerprintAbsent(document *htmlNode) bool {
+	absent := true
+	walkHTML(document, func(node *htmlNode) {
+		if !absent {
+			return
+		}
+		if node.tag == "meta" && strings.EqualFold(strings.TrimSpace(node.attrs["name"]), "generator") && strings.HasPrefix(strings.ToLower(strings.TrimSpace(node.attrs["content"])), "starlight") {
+			absent = false
+			return
+		}
+		_, hasPagefindBody := node.attrs["data-pagefind-body"]
+		if node.attrs["id"] == "starlight__sidebar" || hasPagefindBody || hasHTMLClass(node, "sl-markdown-content") {
+			absent = false
+		}
+	})
+	return absent
+}
+
+func starlightInventoryProgress(fetched, total, generated, excluded int) string {
+	return fmt.Sprintf("fetched %d of %d sitemap pages: %d generated, %d non-framework exclusions", fetched, total, generated, excluded)
 }
 
 func vitepressSiteRoot(document *htmlNode, pageURL *url.URL) (string, error) {
@@ -1491,6 +1974,49 @@ func hasHTMLToken(value, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func initialHTMLLocaleRedirect(start, target *url.URL) bool {
+	if start == nil || target == nil || start.User != nil || target.User != nil || !sameOrigin(start, target) || start.RawPath != "" || target.RawPath != "" || start.RawQuery != "" || target.RawQuery != "" || start.ForceQuery || target.ForceQuery || start.Fragment != "" || target.Fragment != "" || start.RawFragment != "" || target.RawFragment != "" {
+		return false
+	}
+	cleanPath := func(value string) string {
+		cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
+		if cleaned != "/" && strings.HasSuffix(value, "/") {
+			cleaned += "/"
+		}
+		return cleaned
+	}
+	startPath := cleanPath(start.Path)
+	targetPath := cleanPath(target.Path)
+	if startPath != start.Path || targetPath != target.Path || !strings.HasSuffix(targetPath, startPath) {
+		return false
+	}
+	prefix := strings.TrimSuffix(targetPath, startPath)
+	return strings.Count(prefix, "/") == 1 && htmlLocalePrefix.MatchString(strings.TrimPrefix(prefix, "/"))
+}
+
+func deterministicHTMLRouteAlias(first, second *url.URL) bool {
+	if first == nil || second == nil || !sameOrigin(first, second) || first.RawQuery != "" || second.RawQuery != "" || first.Fragment != "" || second.Fragment != "" {
+		return false
+	}
+	return staticHTMLRouteIdentity(first.Path) == staticHTMLRouteIdentity(second.Path)
+}
+
+func staticHTMLRouteIdentity(value string) string {
+	value = strings.ToLower(path.Clean("/" + strings.TrimPrefix(value, "/")))
+	base := path.Base(value)
+	switch strings.ToLower(path.Ext(base)) {
+	case ".html", ".htm", ".xhtml":
+		value = strings.TrimSuffix(value, path.Ext(value))
+	}
+	if path.Base(value) == "index" {
+		value = path.Dir(value)
+	}
+	if value == "." || value == "/" {
+		return "/"
+	}
+	return strings.TrimSuffix(value, "/")
 }
 
 func vitepressStartInventoryAlias(pageURL *url.URL, siteRoot string, inventory []string) (string, error) {
@@ -1635,7 +2161,7 @@ func mdbookTOCInventory(ctx context.Context, pageURL *url.URL, siteRoot string, 
 			return
 		}
 		linked, parseErr := resolved.Parse(href)
-		if parseErr != nil || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || linked.Fragment != "" || !withinDocumentationPath(linked.Path, siteRoot) || !strings.EqualFold(path.Ext(linked.Path), ".html") {
+		if parseErr != nil || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || linked.Fragment != "" || !withinDocumentationPath(linked.Path, siteRoot) || !likelyHTMLPath(linked.Path) {
 			inventoryErr = fmt.Errorf("mdBook TOC contains invalid chapter URL %q", node.attrs["href"])
 			return
 		}
@@ -1699,6 +2225,41 @@ func mdbookPageTitle(document *htmlNode) string {
 		}
 	}
 	return strings.TrimSpace(title)
+}
+
+func mdbookEmptyChapterAlias(document *htmlNode, pageURL *url.URL, inventory map[string]bool) (string, error) {
+	if mdbookPageTitle(document) == "" || inventory == nil {
+		return "", errors.New("mdBook empty chapter has no title or inventory")
+	}
+	chapterRoot := ""
+	if strings.HasSuffix(pageURL.Path, "/") {
+		chapterRoot = normalizeDocumentationRoot(pageURL.Path)
+	} else if strings.EqualFold(path.Base(pageURL.Path), "index.html") {
+		chapterRoot = normalizeDocumentationRoot(path.Dir(pageURL.Path))
+	} else {
+		return "", errors.New("mdBook empty chapter is not an index route")
+	}
+	targets := make(map[string]bool)
+	walkHTML(document, func(node *htmlNode) {
+		if node.tag != "a" || !hasHTMLToken(node.attrs["rel"], "next") {
+			return
+		}
+		linked, err := pageURL.Parse(strings.TrimSpace(node.attrs["href"]))
+		if err != nil || !sameOrigin(pageURL, linked) || linked.RawQuery != "" || linked.Fragment != "" || !withinDocumentationPath(linked.Path, chapterRoot) || path.Clean(linked.Path) == path.Clean(pageURL.Path) {
+			return
+		}
+		canonical, err := canonicalHTTPURL(linked.String())
+		if err == nil && inventory[canonical] {
+			targets[canonical] = true
+		}
+	})
+	if len(targets) != 1 {
+		return "", errors.New("mdBook empty index chapter has no unique in-inventory next chapter")
+	}
+	for target := range targets {
+		return target, nil
+	}
+	panic("unreachable")
 }
 
 func validateMDBookStartAlias(ctx context.Context, startDocument *htmlNode, startView htmlDocumentView, pageURL *url.URL, target string, reader *sourceReader) error {
@@ -2743,6 +3304,15 @@ func likelyHTMLPath(value string) bool {
 	extension := strings.ToLower(path.Ext(value))
 	switch extension {
 	case "", ".html", ".htm", ".xhtml", ".php", ".asp", ".aspx":
+		return true
+	default:
+		return false
+	}
+}
+
+func nextraSitemapNonPagePath(value string) bool {
+	switch strings.ToLower(path.Ext(value)) {
+	case ".jpg", ".png", ".svg", ".txt":
 		return true
 	default:
 		return false

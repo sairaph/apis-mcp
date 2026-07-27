@@ -23,6 +23,7 @@ type apiDescription struct {
 	BasePath   string                          `yaml:"basePath"`
 	Schemes    []string                        `yaml:"schemes"`
 	Paths      map[string]map[string]yaml.Node `yaml:"paths"`
+	Webhooks   map[string]map[string]yaml.Node `yaml:"webhooks"`
 	Components struct {
 		Schemas map[string]yaml.Node `yaml:"schemas"`
 	} `yaml:"components"`
@@ -130,7 +131,7 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 					candidateErrors = append(candidateErrors, fmt.Errorf("parse discovered specification %s: %w", candidateSource, candidateErr))
 					continue
 				}
-				document, kind, provenance = candidateDocument, candidateKind, candidateSource
+				raw, document, kind, provenance = candidateRaw, candidateDocument, candidateKind, candidateSource
 				found = true
 				return
 			}
@@ -154,17 +155,24 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 			return Result{}, fmt.Errorf("no discovered OpenAPI specification could be imported: %w", errors.Join(candidateErrors...))
 		}
 	}
-	return importAPIDescription(ctx, name, version, document, kind, provenance, options)
+	document, sourceCount, err := resolveExternalOpenAPIRefs(ctx, raw, provenance, kind, document, reader)
+	if err != nil {
+		return Result{}, err
+	}
+	if !hasAPIDescriptionOperations(document) {
+		return Result{}, errors.New("OpenAPI document has no path or webhook operations")
+	}
+	return importAPIDescription(ctx, name, version, document, kind, provenance, sourceCount, options)
 }
 
-func importAPIDescription(ctx context.Context, name, version string, document apiDescription, kind, provenance string, options Options) (Result, error) {
+func importAPIDescription(ctx context.Context, name, version string, document apiDescription, kind, provenance string, sources int, options Options) (Result, error) {
 	description := strings.TrimSpace(document.Info.Description)
 	pages := 0
 	reportProgress(options, Progress{Stage: "generating", Framework: kind, URL: provenance, Pages: pages})
 	result, err := publish(ctx, options, name, version, func(stage string) error {
 		metadata := manifest{
 			Name: name, Version: version, Description: description, Collections: options.Collections,
-			SourceRoot: provenance, SourceType: kind, ImportedFrom: provenance, Sources: 1,
+			SourceRoot: provenance, SourceType: kind, ImportedFrom: provenance, Sources: sources,
 		}
 		if err := writeCanonicalFile(stage, "_index.md", metadata, "This document set was generated from an API description."); err != nil {
 			return err
@@ -174,7 +182,7 @@ func importAPIDescription(ctx context.Context, name, version string, document ap
 	if err != nil {
 		return Result{}, err
 	}
-	result.Kind, result.Source, result.Pages, result.Sources = kind, provenance, pages, 1
+	result.Kind, result.Source, result.Pages, result.Sources = kind, provenance, pages, sources
 	reportProgress(options, Progress{Stage: "completed", Framework: kind, URL: provenance, Pages: pages})
 	return result, nil
 }
@@ -184,16 +192,10 @@ func importOpenAPICatalog(ctx context.Context, name, version, provenance string,
 		return Result{}, errors.New("RapiDoc catalog contains no specifications")
 	}
 	pages := 0
+	sourceCount := 0
 	reportProgress(options, Progress{Stage: "generating", Framework: "rapidoc", URL: provenance, Queued: len(sources)})
 	result, err := publish(ctx, options, name, version, func(stage string) error {
 		description := fmt.Sprintf("RapiDoc catalog containing %d API specifications.", len(sources))
-		metadata := manifest{
-			Name: name, Version: version, Description: description, Collections: options.Collections,
-			SourceRoot: provenance, SourceType: "openapi-catalog", ImportedFrom: provenance, Sources: len(sources),
-		}
-		if err := writeCanonicalFile(stage, "_index.md", metadata, "This document set was generated from a finite RapiDoc API catalog."); err != nil {
-			return err
-		}
 		if err := writeCanonicalFile(stage, "overview.md", pageFront{
 			Title: "Overview", PageID: "overview", Description: description,
 			Source: provenance, SourceType: "openapi-catalog", ImportedFrom: provenance,
@@ -226,6 +228,11 @@ func importOpenAPICatalog(ctx context.Context, name, version, provenance string,
 			if err != nil {
 				return fmt.Errorf("parse RapiDoc catalog specification %s (%s): %w", spec.Namespace, resolved, err)
 			}
+			document, graphSources, err := resolveExternalOpenAPIRefs(ctx, raw, resolved, kind, document, reader)
+			if err != nil {
+				return fmt.Errorf("resolve RapiDoc catalog specification %s (%s): %w", spec.Namespace, resolved, err)
+			}
+			sourceCount += graphSources
 			label := strings.TrimSpace(spec.Label)
 			if label == "" {
 				label = strings.TrimSpace(document.Info.Title)
@@ -242,7 +249,11 @@ func importOpenAPICatalog(ctx context.Context, name, version, provenance string,
 				return fmt.Errorf("generate RapiDoc catalog specification %s: %w", spec.Namespace, err)
 			}
 		}
-		return nil
+		metadata := manifest{
+			Name: name, Version: version, Description: description, Collections: options.Collections,
+			SourceRoot: provenance, SourceType: "openapi-catalog", ImportedFrom: provenance, Sources: sourceCount,
+		}
+		return writeCanonicalFile(stage, "_index.md", metadata, "This document set was generated from a finite RapiDoc API catalog.")
 	})
 	if err != nil {
 		return Result{}, err
@@ -251,7 +262,7 @@ func importOpenAPICatalog(ctx context.Context, name, version, provenance string,
 	result.Framework = "rapidoc"
 	result.Source = provenance
 	result.Pages = pages
-	result.Sources = len(sources)
+	result.Sources = sourceCount
 	reportProgress(options, Progress{Stage: "completed", Framework: "rapidoc", URL: provenance, Pages: pages})
 	return result, nil
 }
@@ -275,50 +286,11 @@ func writeAPIDescription(stage, prefix, namespace, name, version, provenance, ki
 	*pages++
 	reportProgress(options, Progress{Stage: "page", Framework: kind, URL: provenance, Pages: *pages, Queued: queued})
 
-	for _, endpoint := range sortedKeys(document.Paths) {
-		pathItem := document.Paths[endpoint]
-		for _, method := range sortedKeys(pathItem) {
-			method = strings.ToLower(method)
-			if !operationMethods[method] {
-				continue
-			}
-			node := pathItem[method]
-			var operation apiOperation
-			if err := node.Decode(&operation); err != nil {
-				return fmt.Errorf("parse operation %s %s: %w", strings.ToUpper(method), endpoint, err)
-			}
-			title := strings.TrimSpace(operation.Summary)
-			if title == "" {
-				title = strings.ToUpper(method) + " " + endpoint
-			}
-			description := strings.TrimSpace(operation.Description)
-			if description == "" {
-				description = strings.TrimSpace(operation.Summary)
-			}
-			tag := "untagged"
-			if len(operation.Tags) > 0 && SafeSlug(operation.Tags[0]) != "" {
-				tag = SafeSlug(operation.Tags[0])
-			}
-			identity := strings.TrimSpace(namespace + " " + strings.ToUpper(method) + " " + endpoint)
-			front := pageFront{
-				Title: title, PageID: stableID("operation-", identity), Path: filepath.ToSlash(filepath.Join(prefix, "operations", tag)),
-				Description: description, Source: provenance, HTTPMethods: []string{strings.ToUpper(method)},
-				APIEndpoints: []string{endpoint}, SourceType: kind, ImportedFrom: provenance,
-			}
-			if operation.OperationID != "" {
-				front.OperationIDs = []string{operation.OperationID}
-			}
-			filename := stableID(method+"-", endpoint) + ".md"
-			body, err := operationMarkdown(method, endpoint, operation, node, pathItem["parameters"])
-			if err != nil {
-				return err
-			}
-			if err := writeCanonicalFile(stage, filepath.Join(prefix, "operations", tag, filename), front, body); err != nil {
-				return err
-			}
-			*pages++
-			reportProgress(options, Progress{Stage: "page", Framework: kind, URL: provenance, Pages: *pages, Queued: queued})
-		}
+	if err := writeAPIOperations(stage, prefix, namespace, provenance, kind, document.Paths, false, pages, queued, options); err != nil {
+		return err
+	}
+	if err := writeAPIOperations(stage, prefix, namespace, provenance, kind, document.Webhooks, true, pages, queued, options); err != nil {
+		return err
 	}
 
 	schemas := document.Components.Schemas
@@ -346,6 +318,62 @@ func writeAPIDescription(stage, prefix, namespace, name, version, provenance, ki
 		}
 		*pages++
 		reportProgress(options, Progress{Stage: "page", Framework: kind, URL: provenance, Pages: *pages, Queued: queued})
+	}
+	return nil
+}
+
+func writeAPIOperations(stage, prefix, namespace, provenance, kind string, items map[string]map[string]yaml.Node, webhook bool, pages *int, queued int, options Options) error {
+	for _, endpoint := range sortedKeys(items) {
+		pathItem := items[endpoint]
+		for _, method := range sortedKeys(pathItem) {
+			method = strings.ToLower(method)
+			if !operationMethods[method] {
+				continue
+			}
+			node := pathItem[method]
+			var operation apiOperation
+			if err := node.Decode(&operation); err != nil {
+				return fmt.Errorf("parse operation %s %s: %w", strings.ToUpper(method), endpoint, err)
+			}
+			title := strings.TrimSpace(operation.Summary)
+			if title == "" {
+				title = strings.ToUpper(method) + " " + endpoint
+			}
+			description := strings.TrimSpace(operation.Description)
+			if description == "" {
+				description = strings.TrimSpace(operation.Summary)
+			}
+			tag := "untagged"
+			if len(operation.Tags) > 0 && SafeSlug(operation.Tags[0]) != "" {
+				tag = SafeSlug(operation.Tags[0])
+			}
+			pageIDPrefix, outputRoot, displayEndpoint := "operation-", "operations", endpoint
+			identity := strings.TrimSpace(namespace + " " + strings.ToUpper(method) + " " + endpoint)
+			filenameIdentity := endpoint
+			if webhook {
+				pageIDPrefix, outputRoot, displayEndpoint = "webhook-operation-", "webhooks", "webhook:"+endpoint
+				identity = strings.TrimSpace(namespace + " webhook " + strings.ToUpper(method) + " " + endpoint)
+				filenameIdentity = "webhook " + endpoint
+			}
+			front := pageFront{
+				Title: title, PageID: stableID(pageIDPrefix, identity), Path: filepath.ToSlash(filepath.Join(prefix, outputRoot, tag)),
+				Description: description, Source: provenance, HTTPMethods: []string{strings.ToUpper(method)},
+				APIEndpoints: []string{displayEndpoint}, SourceType: kind, ImportedFrom: provenance,
+			}
+			if operation.OperationID != "" {
+				front.OperationIDs = []string{operation.OperationID}
+			}
+			filename := stableID(method+"-", filenameIdentity) + ".md"
+			body, err := operationMarkdown(method, displayEndpoint, operation, node, pathItem["parameters"])
+			if err != nil {
+				return err
+			}
+			if err := writeCanonicalFile(stage, filepath.Join(prefix, outputRoot, tag, filename), front, body); err != nil {
+				return err
+			}
+			*pages++
+			reportProgress(options, Progress{Stage: "page", Framework: kind, URL: provenance, Pages: *pages, Queued: queued})
+		}
 	}
 	return nil
 }
@@ -549,10 +577,23 @@ func parseAPIDescription(raw []byte) (apiDescription, string, error) {
 	if err != nil {
 		return apiDescription{}, "", err
 	}
-	if len(document.Paths) == 0 {
-		return apiDescription{}, "", errors.New("OpenAPI document has no paths")
+	if len(document.Paths) == 0 && len(document.Webhooks) == 0 {
+		return apiDescription{}, "", errors.New("OpenAPI document has no paths or webhooks")
 	}
 	return document, kind, nil
+}
+
+func hasAPIDescriptionOperations(document apiDescription) bool {
+	for _, items := range []map[string]map[string]yaml.Node{document.Paths, document.Webhooks} {
+		for _, pathItem := range items {
+			for method := range pathItem {
+				if operationMethods[strings.ToLower(method)] {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func parseCatalogAPIDescription(raw []byte) (apiDescription, string, error) {

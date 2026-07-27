@@ -106,10 +106,10 @@ test deployment was replaced after it migrated to Astro Starlight.
 
 MkDocs Material completeness is based on its generated `sitemap.xml`, not only
 the primary sidebar. This covers blog pagination and generated detail pages
-that Material intentionally omits from navigation. Every same-origin sitemap
+that Material intentionally omits from navigation. Every same-origin HTML page
 entry must be fetched successfully and remain under the detected documentation
-root. Static refresh aliases count as fetched inventory but do not generate
-duplicate Markdown pages.
+root; a non-page record invalidates the authoritative sitemap. Static refresh
+aliases count as fetched inventory but do not generate duplicate Markdown pages.
 
 ### MkDocs
 
@@ -135,7 +135,8 @@ custom-theme deployment:
 Plain MkDocs uses a non-empty same-origin sitemap as its authoritative
 inventory. An absent or empty sitemap fails closed because primary navigation
 can omit generated pages. Every inventory entry must be fetched successfully,
-and framework detection must remain consistent across all pages.
+framework detection must remain consistent across all pages, and non-page
+records invalidate the authoritative sitemap.
 
 ### Sphinx
 
@@ -271,12 +272,15 @@ independent Docsify-This deployment backed by a multi-page course repository:
 
 Docsify completeness is bounded by GitHub-backed source roots that are
 statically advertised in the shell configuration or supplied through an
-explicit `basePath` query. Each ref, including refs containing slashes, is
-resolved to an immutable commit; its recursive Git tree must be untruncated,
-and every selected `.md` blob must be fetched and published at its mirrored
-repository path. An upstream `_index.md` receives a deterministic page filename
-to avoid collision with the canonical manifest convention. Generic HTTP and
-dynamic `basePath` sources fail closed when they cannot provide a finite
+explicit `basePath` query. A standard GitHub Pages deployment is accepted only
+when public deployment metadata identifies its successful commit and URL and
+exactly one immutable repository shell at the root or under `docs/` matches the
+deployed shell. Each ref, including refs containing slashes, is resolved to an
+immutable commit; its recursive Git tree must be untruncated, and every selected
+`.md` blob must be fetched and published at its mirrored repository path. An
+upstream `_index.md` receives a deterministic page filename to avoid collision
+with the canonical manifest convention. Generic HTTP, ambiguous Pages roots,
+and dynamic `basePath` sources fail closed when they cannot provide a finite
 enumerable inventory. The importer preserves source Markdown and non-conflicting
 frontmatter fields instead of executing Docsify or scraping its client-rendered
 shell. Non-`.md` resources are outside the canonical page inventory and are not
@@ -386,6 +390,78 @@ RapiDoc can also receive an in-memory specification through JavaScript
 `loadSpec(object)`. Such a page is detected as RapiDoc but is incomplete unless
 it exposes a stable source URL; the importer fails it explicitly instead of
 falling back to a generic HTML crawl or claiming completeness.
+
+## Extended Compatibility Sweep
+
+Verified on 2026-07-27 against 30 additional public API and developer
+documentation deployments, three per completed framework or framework-backed
+format. Every final job completed with an empty queue and no page or depth
+truncation. Generated Markdown and independently reopened SQLite page counts
+matched for all 2,656 canonical pages, and every document returned relevant FTS
+results.
+
+| Framework | Deployment | Final job | Finite inventory accounting | Markdown / SQLite pages |
+| --- | --- | --- | --- | ---: |
+| Docusaurus | [Playwright Node.js API](https://playwright.dev/docs/api/class-playwright) | `019fa501-9c05-7f28-a0f8-dcece5a53dc6` | 70 unique scoped sidebar routes | 70 / 70 |
+| Docusaurus | [Babel documentation](https://babeljs.io/docs/config-files) | `019fa503-1530-780e-9a92-6841b7b097e9` | 102 unique scoped sidebar routes | 102 / 102 |
+| Docusaurus | [Prettier API](https://prettier.io/docs/api/) | `019fa504-6a36-7b29-aee6-be8317bd3f6d` | 24 canonical sidebar pages; slash alias deduplicated | 24 / 24 |
+| RapiDoc | [Pi-hole FTL API](https://ftl.pi-hole.net/master/docs/) | `019fa567-3e08-79c1-928a-4aa263fe44c6` | 22-file graph; 92 operations and 109 reachable schemas | 202 / 202 |
+| RapiDoc | [Mailpit API v1](https://mailpit.axllent.org/docs/api-v1/view.html) | `019fa569-a4cb-7362-b21a-d0b0dfa6ef10` | 1 Swagger source; 25 operations and 19 definitions | 45 / 45 |
+| RapiDoc | [OpenAPI Generator Online](https://api.openapi-generator.tech/index.html) | `019fa56a-28b7-7eb5-bbe2-b2681c512407` | 1 Swagger source; 7 operations and 5 definitions | 13 / 13 |
+| MkDocs Material | [PyIceberg](https://py.iceberg.apache.org/) | `019fa4b3-7f5b-7590-9238-5429f012a7ba` | 91 sitemap records | 91 / 91 |
+| MkDocs Material | [Hatch 1.17](https://hatch.pypa.io/1.17/) | `019fa4b5-5e07-779e-86c8-e367901b9194` | 85 sitemap records | 85 / 85 |
+| MkDocs Material | [HTTPX](https://www.python-httpx.org/) | `019fa496-16a7-7087-81b4-3a869d88b834` | 23 sitemap records | 23 / 23 |
+| MkDocs | [CCTools](https://cctools.readthedocs.io/en/latest/) | `019fa494-854d-7d12-b7cf-4e1c79212011` | 119 sitemap records | 119 / 119 |
+| MkDocs | [LORIS](https://acesloris.readthedocs.io/en/latest/) | `019fa4b4-3cfa-7547-acea-e7f1bb283c04` | 240 sitemap records; root/index alias accounted | 240 / 240 |
+| MkDocs | [Sense HAT](https://sense-hat.readthedocs.io/en/latest/) | `019fa497-377e-7d70-a071-c6449d457520` | 4 sitemap records | 4 / 4 |
+| Sphinx | [Flask](https://flask.palletsprojects.com/en/stable/) | `019fa493-dc5e-76f8-8726-7621f97aaac3` | 76 titled search-index documents | 76 / 76 |
+| Sphinx | [aiohttp](https://docs.aiohttp.org/en/stable/) | `019fa496-2f91-77d0-aaf0-0cc94ad915f1` | 39 titled search-index documents | 39 / 39 |
+| Sphinx | [SQLAlchemy 2.0](https://docs.sqlalchemy.org/en/20/) | `019fa4b3-8c63-7738-b0ff-06613b6b30fc` | 180 titled search-index documents | 180 / 180 |
+| VitePress | [OpenAPI TypeScript](https://openapi-ts.dev/introduction) | `019fa4b4-5ca0-7d10-bc99-26c41afefbc7` | 55 sitemap records; 2 redirect aliases | 55 / 55 |
+| VitePress | [Vue Router API](https://router.vuejs.org/api/) | `019fa4b5-6de2-7734-8160-958ebb656090` | 229 sitemap records; 144 case-normalizing aliases | 229 / 229 |
+| VitePress | [Element Plus](https://element-plus.org/en-US/component/overview) | `019fa4b9-7f2a-77b9-a2ab-eb2ff0ac3a48` | 307 multilingual sitemap records | 307 / 307 |
+| Nextra | [React Flow API](https://reactflow.dev/api-reference) | `019fa501-bab8-73c6-bce9-0b49e1437ff6` | 330 records: 119 API pages, 205 out of scope, 6 non-pages | 119 / 119 |
+| Nextra | [Typia](https://typia.io/docs/) | `019fa4b8-497b-7dbf-b8f3-9483d6599b1f` | 34 docs routes selected from a 71-record sitemap shard | 34 / 34 |
+| Nextra | [imgix Rendering API](https://docs.imgix.com/apis/rendering/overview) | `019fa4cc-643a-7244-830a-d13f7a73a938` | 209 English rendering routes selected from 577 records | 209 / 209 |
+| Astro Starlight | [sharp](https://sharp.pixelplumbing.com/) | `019fa4b3-e61a-73f6-9656-3484f826efd0` | 119 sitemap records | 119 / 119 |
+| Astro Starlight | [Web Monetization](https://webmonetization.org/docs/) | `019fa4cc-65fc-7568-af76-cda1eff79a61` | 39 fetched: 32 Starlight pages and 7 validated non-framework pages | 32 / 32 |
+| Astro Starlight | [ScreenshotOne](https://screenshotone.com/docs/getting-started/) | `019fa4b8-762e-713b-8b63-d6b5c68aa72d` | 81 docs routes selected from 530 records | 81 / 81 |
+| Docsify | [node-google-spreadsheet](https://theoephraim.github.io/node-google-spreadsheet/#/) | `019fa519-a0c1-72cc-9d81-f9835d5f1098` | 9 immutable deployed-commit `docs/` Markdown sources | 9 / 9 |
+| Docsify | [ERC721A](https://chiru-labs.github.io/ERC721A/#/) | `019fa519-a112-766c-8245-8612f1bb951c` | 11 immutable deployed-commit `docs/` Markdown sources | 11 / 11 |
+| Docsify | [Polly.JS](https://netflix.github.io/pollyjs/#/) | `019fa519-a112-75a2-a7b3-dbf04db1f109` | 31 deployed `gh-pages` root and 3 advertised `master` Markdown sources | 34 / 34 |
+| mdBook | [Servo Book](https://book.servo.org/) | `019fa4b3-b341-78a3-8f4a-34b454088a02` | 58 TOC records: 57 pages and 1 empty-group alias | 57 / 57 |
+| mdBook | [Rust on ESP](https://docs.espressif.com/projects/rust/book/) | `019fa494-dd26-7a71-bd05-57215047dae3` | 23 TOC records | 23 / 23 |
+| mdBook | [Aya Book](https://aya-rs.dev/book/) | `019fa4b5-6003-760b-a575-5dc249d5d76c` | 24 root, nested, and clean-route TOC records | 24 / 24 |
+
+The unrepaired candidate runs exposed 18 failures that correctly published
+nothing and two dangerous successful-but-incomplete imports. Pi-hole initially
+published only its root OpenAPI file, and Prettier initially narrowed a
+trailing-slash leaf URL to two duplicate aliases. The fixes established the
+following additional compatibility contracts:
+
+- external OpenAPI references form a bounded, same-scope graph that is fully
+  loaded, validated, bundled, counted, and generated; OpenAPI 3.1
+  pointer-based graphs are supported, while external JSON Schema resource
+  semantics such as `$id`, `$anchor`, and `$dynamicRef` fail closed;
+- transient source GETs receive bounded, cancellation-aware retries while
+  permanent failures still fail the atomic import;
+- dense generated API pages remain bounded but may contain up to 250,000 HTML
+  nodes;
+- sitemap indexes, deterministic route aliases, locale alternates, and initial
+  locale redirects are explicitly accounted; non-page records are either
+  rejected or narrowly validated and excluded according to the framework;
+- monolingual Starlight deployments may use a site-wide mixed-layout sitemap
+  only when every excluded page is fetched and proves a non-redirecting,
+  self-canonical, non-Starlight static page;
+- standard GitHub Pages Docsify deployments pin the successful deployment
+  commit and accept exactly one matching immutable root or `docs/` shell, while
+  retaining explicitly advertised Markdown roots;
+- current mdBook root and clean routes are valid TOC records, and an empty
+  index-group record is an alias only when it has one unique in-inventory next
+  chapter; and
+- Docusaurus leaf starts derive a non-root documentation section from static
+  sidebar evidence and collapse slash aliases without crossing into unrelated
+  site sections.
 
 ## Completeness Rules
 

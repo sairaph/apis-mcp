@@ -2001,8 +2001,8 @@ func TestImportHTMLRejectsExcessiveTreeDepthAndNodes(t *testing.T) {
 		want string
 	}{
 		{name: "depth", body: "<html><body>" + strings.Repeat("<div>", 1_000) + "bounded", want: "maximum tree depth"},
-		{name: "nodes", body: "<html><body>" + strings.Repeat("<br>", 50_001), want: "maximum node count"},
-		{name: "prefixed nodes", body: "prefix<html><body>" + strings.Repeat("<br>", 50_001), want: "maximum node count"},
+		{name: "nodes", body: "<html><body>" + strings.Repeat("<br>", 250_001), want: "maximum node count"},
+		{name: "prefixed nodes", body: "prefix<html><body>" + strings.Repeat("<br>", 250_001), want: "maximum node count"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
