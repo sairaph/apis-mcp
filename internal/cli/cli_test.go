@@ -34,6 +34,9 @@ func TestParseCommands(t *testing.T) {
 			return c.ImportKind == "openapi" && c.APIName == "Pet API" && c.Version == "v1"
 		}},
 		{[]string{"import", "llms", "Pet API", "v1", "llms.txt"}, func(c Command) bool { return c.ImportKind == "llms" && c.Source == "llms.txt" }},
+		{[]string{"import", "docsify", "Docs", "v1", "https://example.test/#/"}, func(c Command) bool {
+			return c.ImportKind == "docsify" && c.APIName == "Docs" && c.Version == "v1" && c.Source == "https://example.test/#/"
+		}},
 		{[]string{"import", "html", "Pet API", "v1", "https://example.test/docs", "--max-pages", "12", "--max-depth=2"}, func(c Command) bool {
 			return c.ImportKind == "html" && c.Source == "https://example.test/docs" && c.MaxPages == 12 && c.MaxDepth == 2
 		}},
@@ -159,7 +162,7 @@ func TestHumanHTTPRenderingUsesPublishedOrExpectedBodyPath(t *testing.T) {
 
 func TestHelpListsCoreCommandsAndClients(t *testing.T) {
 	help := Help("v1.2.3")
-	for _, wanted := range []string{"apis-mcp v1.2.3", "collections", "sessions", "configure", "import markdown", "import openapi", "import llms", "import html", "claude-desktop", "opencode"} {
+	for _, wanted := range []string{"apis-mcp v1.2.3", "collections", "sessions", "configure", "import markdown", "import openapi", "import llms", "import html", "import docsify", "claude-desktop", "opencode"} {
 		if !strings.Contains(help, wanted) {
 			t.Errorf("help missing %q", wanted)
 		}

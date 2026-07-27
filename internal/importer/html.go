@@ -241,6 +241,9 @@ func ImportHTML(ctx context.Context, name, version, source string, options Optio
 		if len(pages) == 0 {
 			rootFramework = view.framework
 			reportProgress(options, Progress{Stage: "detected", Framework: rootFramework, URL: provenance})
+			if rootFramework == "docsify" {
+				return Result{}, errors.New("Docsify source Markdown requires the Docsify importer")
+			}
 		} else if rootFramework != "" && view.framework != rootFramework {
 			crawlErrors = append(crawlErrors, fmt.Errorf("framework changed from %s to %s at %s", rootFramework, view.framework, provenance))
 			continue
@@ -787,6 +790,9 @@ func detectHTMLFramework(root *htmlNode) string {
 	if framework == "" && looksLikeNextra(root) {
 		framework = "nextra"
 	}
+	if framework == "" && looksLikeDocsify(root) {
+		framework = "docsify"
+	}
 	if framework == "" && looksLikeMkDocsBuiltIn(root) {
 		framework = "mkdocs"
 	}
@@ -830,6 +836,27 @@ func looksLikeNextra(root *htmlNode) bool {
 	}
 	article := firstHTMLClass(root, "nextra-content")
 	return article != nil && firstHTMLChild(article, "main") != nil && len(htmlClasses(root, "nextra-sidebar-container")) > 0
+}
+
+func looksLikeDocsify(root *htmlNode) bool {
+	if firstHTMLAttribute(root, "id", "app") == nil {
+		return false
+	}
+	configured := false
+	runtime := false
+	walkHTML(root, func(node *htmlNode) {
+		if node.tag != "script" {
+			return
+		}
+		if strings.Contains(htmlNodeText(node), "window.$docsify") {
+			configured = true
+		}
+		if source, err := url.Parse(strings.TrimSpace(node.attrs["src"])); err == nil {
+			base := strings.ToLower(path.Base(source.Path))
+			runtime = runtime || base == "docsify.js" || base == "docsify.min.js" || strings.HasPrefix(base, "docsify@")
+		}
+	})
+	return configured && runtime
 }
 
 func htmlAssetPathContains(root *htmlNode, marker string) bool {

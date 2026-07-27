@@ -216,7 +216,7 @@ func Parse(args []string) (Command, error) {
 		command.ClientIDs = clients
 	case "import":
 		if len(rest) == 0 {
-			return Command{}, errors.New("usage: apis-mcp import <markdown|openapi|llms|html> ...")
+			return Command{}, errors.New("usage: apis-mcp import <markdown|openapi|llms|html|docsify> ...")
 		}
 		command.ImportKind = rest[0]
 		switch command.ImportKind {
@@ -225,7 +225,7 @@ func Parse(args []string) (Command, error) {
 				return Command{}, errors.New("usage: apis-mcp import markdown <directory>")
 			}
 			command.Source = rest[1]
-		case "openapi", "llms":
+		case "openapi", "llms", "docsify":
 			if len(rest) != 4 {
 				return Command{}, fmt.Errorf("usage: apis-mcp import %s <api-name> <version> <file-or-url>", command.ImportKind)
 			}
@@ -247,7 +247,7 @@ func Parse(args []string) (Command, error) {
 			}
 			command.APIName, command.Version, command.Source = positionals[0], positionals[1], positionals[2]
 		default:
-			return Command{}, fmt.Errorf("unknown import type %q; expected markdown, openapi, llms, or html", command.ImportKind)
+			return Command{}, fmt.Errorf("unknown import type %q; expected markdown, openapi, llms, html, or docsify", command.ImportKind)
 		}
 	default:
 		return Command{}, fmt.Errorf("unknown command %q; run apis-mcp help", command.Name)
@@ -322,6 +322,9 @@ func Execute(ctx context.Context, runtime *bootstrap.Runtime, args []string, opt
 		case "html":
 			importOptions.MaxHTMLPages, importOptions.MaxHTMLDepth = command.MaxPages, command.MaxDepth
 			value, err = importer.ImportHTML(ctx, command.APIName, command.Version, command.Source, importOptions)
+		case "docsify":
+			importOptions.HTMLLimitsSet, importOptions.MaxHTMLPages, importOptions.MaxHTMLDepth = true, -1, -1
+			value, err = importer.ImportDocsify(ctx, command.APIName, command.Version, command.Source, importOptions)
 		}
 	}
 	if err != nil {
@@ -477,6 +480,7 @@ Usage:
   apis-mcp import openapi API_NAME VERSION FILE_OR_URL
   apis-mcp import llms API_NAME VERSION FILE_OR_URL
   apis-mcp import html API_NAME VERSION URL [--max-pages N] [--max-depth N]
+  apis-mcp import docsify API_NAME VERSION URL
   apis-mcp sessions [list|create|show ID|delete ID|cleanup]
   apis-mcp cache cleanup
   apis-mcp config [path]

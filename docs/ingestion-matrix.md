@@ -28,7 +28,7 @@ Status values are `planned`, `active`, and `complete`.
 | VitePress | https://vitepress.dev/guide/getting-started | https://vite.dev/guide/ | Static HTML / sitemap | complete |
 | Nextra | https://nextra.site/docs | https://authjs.dev/getting-started | Static HTML / sitemap | complete |
 | Astro Starlight | https://starlight.astro.build/getting-started/ | https://docs.astro.build/en/getting-started/ | Static HTML / sitemap index | complete |
-| Docsify | https://docsify.js.org/#/quickstart | https://docsify-this.net/ | Source Markdown | planned |
+| Docsify | https://docsify.js.org/#/quickstart | https://docsify-this.net/?basePath=https%3A%2F%2Fraw.githubusercontent.com%2Fhibbitts-design%2Fdocsify-this-multiple-page-course-site%2Fmain | Source Markdown / Git tree | complete |
 | mdBook | https://rust-lang.github.io/mdBook/ | https://doc.rust-lang.org/book/ | Static HTML / TOC | planned |
 | VuePress | https://v2.vuepress.vuejs.org/guide/ | https://vuex.vuejs.org/ | Static HTML | planned |
 | Rspress | https://rspress.rs/guide/start/getting-started | https://rsbuild.dev/guide/start/index | Static HTML / Markdown | planned |
@@ -55,7 +55,7 @@ retired deployment is replaced with another independent public deployment.
 | Read the Docs | https://docs.readthedocs.com/platform/stable/ | https://requests.readthedocs.io/en/latest/ | Markdown negotiation / HTML | planned |
 | llms.txt | https://www.mintlify.com/docs/llms.txt | https://gitbook.com/docs/llms.txt | llms.txt | planned |
 | Static HTML | https://docusaurus.io/docs | https://www.mkdocs.org/ | Static HTML | active |
-| Source Markdown shell | https://docsify.js.org/#/quickstart | https://docsify-this.net/ | Source Markdown | planned |
+| Source Markdown shell | https://docsify.js.org/#/quickstart | https://docsify-this.net/?basePath=https%3A%2F%2Fraw.githubusercontent.com%2Fhibbitts-design%2Fdocsify-this-multiple-page-course-site%2Fmain | Source Markdown / Git tree | complete |
 
 ## Completed Evidence
 
@@ -247,6 +247,43 @@ on sidebar coverage or hard-coded locale prefixes. The importer validates every
 shard and URL record, requires canonical static Starlight content for every
 selected route, and rejects redirects, repeated entries, malformed records,
 ambiguous locale metadata, or client-only shells before publication.
+
+### Docsify
+
+Verified on 2026-07-27 against the official Docsify deployment and an
+independent Docsify-This deployment backed by a multi-page course repository:
+
+| Check | Docsify development site | Docsify-This test site |
+| --- | --- | --- |
+| Job ID | `019fa42f-b214-754a-a1ef-6e4beeff83f2` | `019fa42f-b262-7675-b1f1-21bdb3b6e78a` |
+| Detection / engine | `docsify` / `docsify` | `docsify` / `docsify` |
+| Statically configured GitHub roots | 4 | 1 |
+| Git tree `.md` sources exhausted | 49 | 26 |
+| Canonical Markdown pages | 49 | 26 |
+| Immutable commit sources | Pass | Pass |
+| Markdown directory layout retained | Pass | Pass |
+| Frontmatter fields and Docsify syntax retained | Pass | Pass |
+| SQLite pages for document | 49 | 26 |
+| FTS acceptance query | `quickstart` | `schedule` |
+| Detached terminal state | `succeeded` | `succeeded` |
+| Unlimited inventory completed naturally | Pass | Pass |
+| Truncated | No | No |
+
+Docsify completeness is bounded by GitHub-backed source roots that are
+statically advertised in the shell configuration or supplied through an
+explicit `basePath` query. Each ref, including refs containing slashes, is
+resolved to an immutable commit; its recursive Git tree must be untruncated,
+and every selected `.md` blob must be fetched and published at its mirrored
+repository path. An upstream `_index.md` receives a deterministic page filename
+to avoid collision with the canonical manifest convention. Generic HTTP and
+dynamic `basePath` sources fail closed when they cannot provide a finite
+enumerable inventory. The importer preserves source Markdown and non-conflicting
+frontmatter fields instead of executing Docsify or scraping its client-rendered
+shell. Non-`.md` resources are outside the canonical page inventory and are not
+mirrored; each page retains its immutable upstream source for resolving such
+references. `GITHUB_TOKEN` is used only for explicit HTTPS `api.github.com`
+inventory requests when present, allowing large or repeated inventories to
+avoid anonymous rate limits.
 
 ### OpenAPI 3 JSON/YAML
 

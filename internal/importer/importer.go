@@ -120,10 +120,11 @@ type pageFront struct {
 }
 
 type sourceReader struct {
-	client    *http.Client
-	perSource int64
-	total     int64
-	used      int64
+	client      *http.Client
+	githubToken string
+	perSource   int64
+	total       int64
+	used        int64
 }
 
 // ImportMarkdown imports a canonical document-set directory whose root
@@ -259,7 +260,7 @@ func reportProgress(options Options, progress Progress) {
 }
 
 func newSourceReader(options Options) *sourceReader {
-	return &sourceReader{client: options.HTTPClient, perSource: options.MaxSourceBytes, total: options.MaxTotalBytes}
+	return &sourceReader{client: options.HTTPClient, githubToken: strings.TrimSpace(os.Getenv("GITHUB_TOKEN")), perSource: options.MaxSourceBytes, total: options.MaxTotalBytes}
 }
 
 func (reader *sourceReader) read(ctx context.Context, source string, base *url.URL) ([]byte, string, error) {
@@ -278,6 +279,9 @@ func (reader *sourceReader) readFromOrigin(ctx context.Context, source string, b
 			return nil, "", err
 		}
 		request.Header.Set("User-Agent", "apis-mcp-documentation-importer")
+		if allowedOrigin == "https://api.github.com" && httpOrigin(request.URL) == allowedOrigin && reader.githubToken != "" {
+			request.Header.Set("Authorization", "Bearer "+reader.githubToken)
+		}
 		client := reader.client
 		if allowedOrigin != "" {
 			clone := *reader.client

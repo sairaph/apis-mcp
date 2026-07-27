@@ -41,7 +41,11 @@ func DetectURL(ctx context.Context, source string, options Options) (Detection, 
 		return Detection{}, errors.New("source is neither OpenAPI nor HTML documentation")
 	}
 	if framework := detectHTMLFramework(document); framework != "" {
-		return Detection{Engine: "html", Framework: framework, Format: "html", Source: provenance}, nil
+		engine := "html"
+		if framework == "docsify" {
+			engine = "docsify"
+		}
+		return Detection{Engine: engine, Framework: framework, Format: "html", Source: provenance}, nil
 	}
 	base, err := url.Parse(provenance)
 	if err == nil && (len(openAPISpecCandidates(document, base)) > 0 || len(openAPIConfigScripts(document, base)) > 0 || len(rapidocCatalogRoots(document, base)) > 0 || hasRapiDocComponent(document)) {

@@ -25,7 +25,7 @@ var menu = []menuItem{
 	{title: "Search documentation", description: "Search within one document ID", action: "search"},
 	{title: "Read documentation", description: "Read one page by document and page ID", action: "read"},
 	{title: "HTTP call", description: "Send a local workspace HTTP request", action: "call"},
-	{title: "Import documentation", description: "Import markdown, OpenAPI, llms.txt, or HTML", action: "import"},
+	{title: "Import documentation", description: "Import markdown, OpenAPI, llms.txt, HTML, or Docsify", action: "import"},
 	{title: "Rebuild library", description: "Validate sources and publish a fresh index", action: "rebuild"},
 	{title: "List sessions", description: "Review persisted cookie sessions", action: "sessions"},
 	{title: "Inspect session", description: "Show cookies for a session ID", action: "session-show"},
@@ -337,6 +337,9 @@ func (m model) runForm() tea.Cmd {
 				value, result.err = importer.ImportLLMSTxt(m.ctx, name, version, source, options)
 			case "html":
 				value, result.err = importer.ImportHTML(m.ctx, name, version, source, options)
+			case "docsify":
+				options.HTMLLimitsSet, options.MaxHTMLPages, options.MaxHTMLDepth = true, -1, -1
+				value, result.err = importer.ImportDocsify(m.ctx, name, version, source, options)
 			default:
 				result.err = fmt.Errorf("unknown import kind %q", kind)
 			}

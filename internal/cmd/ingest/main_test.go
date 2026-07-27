@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,16 @@ import (
 
 	"github.com/sairaph/apis-mcp/library"
 )
+
+type workerRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function workerRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func workerResponse(request *http.Request, status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status)), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}
+}
 
 func TestWorkerIngestsAndIndexesOpenAPI(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -118,6 +129,52 @@ func TestWorkerScopesDocusaurusToStartingPath(t *testing.T) {
 	job, _ = store.get(job.ID)
 	if job.State != jobSucceeded || job.Result == nil || job.Result.Pages != 2 || job.Result.Truncated || blogRequests != 0 {
 		t.Fatalf("unexpected scoped job: %+v, blog requests=%d", job, blogRequests)
+	}
+}
+
+func TestWorkerDispatchesDocsifyImporter(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	const tree = "abcdef0123456789abcdef0123456789abcdef01"
+	client := &http.Client{Transport: workerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch {
+		case request.URL.Host == "docs.example":
+			return workerResponse(request, http.StatusOK, `<!doctype html><html><body><div id="app"></div><script>window.$docsify = {}; const edit = 'https://github.com/example/docs/tree/main/docs/' + route;</script><script src="https://cdn.jsdelivr.net/npm/docsify@5"></script></body></html>`), nil
+		case request.URL.Host == "api.github.com" && strings.HasSuffix(request.URL.Path, "/commits/main/docs"):
+			return workerResponse(request, http.StatusNotFound, `{}`), nil
+		case request.URL.Host == "api.github.com" && strings.HasSuffix(request.URL.Path, "/commits/main"):
+			return workerResponse(request, http.StatusOK, `{"sha":"`+commit+`","commit":{"tree":{"sha":"`+tree+`"}}}`), nil
+		case request.URL.Host == "api.github.com" && strings.HasSuffix(request.URL.Path, "/git/trees/"+tree):
+			return workerResponse(request, http.StatusOK, `{"sha":"`+tree+`","truncated":false,"tree":[{"path":"docs/README.md","type":"blob","size":25}]}`), nil
+		case request.URL.Host == "raw.githubusercontent.com" && strings.HasSuffix(request.URL.Path, "/docs/README.md"):
+			return workerResponse(request, http.StatusOK, "# Worker Docsify\n\nDispatch works.\n"), nil
+		default:
+			return workerResponse(request, http.StatusNotFound, `{}`), nil
+		}
+	})}
+	store, err := openJobStore(t.TempDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.create(ingestRequest{
+		Output: store.output, Source: "https://docs.example/", Name: "Worker Docs", Version: "v1",
+		Scope: "path", MaxPages: -1, MaxDepth: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runWorker(context.Background(), store, job.ID, client); err != nil {
+		t.Fatal(err)
+	}
+	job, err = store.get(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.State != jobSucceeded || job.Detection == nil || job.Detection.Engine != "docsify" || job.Result == nil || job.Result.Framework != "docsify" || job.Result.Pages != 1 || job.Result.Sources != 1 {
+		t.Fatalf("unexpected Docsify job: %+v", job)
+	}
+	generated := filepath.Join(store.output, "worker-docs", "v1", "documentation", "example", "docs", commit, "docs", "README.md")
+	if raw, err := os.ReadFile(generated); err != nil || !strings.Contains(string(raw), "Dispatch works.") {
+		t.Fatalf("Docsify worker output: %q, %v", raw, err)
 	}
 }
 

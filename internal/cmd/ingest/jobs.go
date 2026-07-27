@@ -636,6 +636,8 @@ func runWorker(ctx context.Context, store *jobStore, id string, client *http.Cli
 			result, ingestErr = importer.ImportOpenAPI(workerCtx, job.Request.Name, job.Request.Version, job.Request.Source, options)
 		case "html":
 			result, ingestErr = importer.ImportHTML(workerCtx, job.Request.Name, job.Request.Version, job.Request.Source, options)
+		case "docsify":
+			result, ingestErr = importer.ImportDocsify(workerCtx, job.Request.Name, job.Request.Version, job.Request.Source, options)
 		default:
 			ingestErr = fmt.Errorf("unsupported ingestion engine %q", detection.Engine)
 		}

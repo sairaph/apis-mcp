@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,22 @@ import (
 	"github.com/sairaph/apis-mcp/internal/importer"
 	"github.com/sairaph/apis-mcp/library"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func testHTTPResponse(request *http.Request, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    request,
+	}
+}
 
 func TestImportMarkdownRejectsExistingDestinationAndDocID(t *testing.T) {
 	ctx := context.Background()
@@ -1677,6 +1694,115 @@ func TestImportHTMLRejectsInvalidAstroStarlightSitemapIndex(t *testing.T) {
 				t.Fatalf("expected %q Astro Starlight sitemap rejection, got %v", test.want, err)
 			}
 		})
+	}
+}
+
+func TestImportDocsifyExhaustsPinnedGitHubMarkdownTree(t *testing.T) {
+	const commitSHA = "0123456789abcdef0123456789abcdef01234567"
+	const treeSHA = "89abcdef0123456789abcdef0123456789abcdef"
+	rawBodies := map[string]string{
+		"README.md":      "# Docsify Fixture\n\n[Guide](guide.md)\n\n<script>window.fixture = true</script>\n",
+		"_index.md":      "# Reserved Source Index\n\nCanonical manifest collision avoided.\n",
+		"guide.md":       "---\ntitle: Fixture Guide\ndescription: Frontmatter retained.\ncustom: upstream\n---\n\n# Ignored Heading\n\nDocsify :include syntax stays [deep](nested/deep.md ':include').\n",
+		"nested/deep.md": "# Deep Source\n\nSearchable complete inventory content.\n",
+	}
+	rawRequests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "docs.test":
+			return testHTTPResponse(request, http.StatusOK, `<!doctype html><html><body><div id="app"></div><script>window.$docsify = {name: 'Fixture'}</script><script src="https://cdn.jsdelivr.net/npm/docsify@5/dist/docsify.min.js"></script></body></html>`), nil
+		case "api.github.com":
+			if strings.HasSuffix(request.URL.Path, "/commits/main") {
+				return testHTTPResponse(request, http.StatusOK, `{"sha":"`+commitSHA+`","commit":{"tree":{"sha":"`+treeSHA+`"}}}`), nil
+			}
+			if strings.HasSuffix(request.URL.Path, "/git/trees/"+treeSHA) && request.URL.Query().Get("recursive") == "1" {
+				return testHTTPResponse(request, http.StatusOK, `{"sha":"`+treeSHA+`","truncated":false,"tree":[{"path":"README.md","type":"blob","size":90},{"path":"_index.md","type":"blob","size":70},{"path":"guide.md","type":"blob","size":180},{"path":"nested/deep.md","type":"blob","size":60},{"path":"image.png","type":"blob","size":10}]}`), nil
+			}
+		case "raw.githubusercontent.com":
+			prefix := "/fixture/docs/" + commitSHA + "/"
+			if strings.HasPrefix(request.URL.Path, prefix) {
+				if body, ok := rawBodies[strings.TrimPrefix(request.URL.Path, prefix)]; ok {
+					rawRequests++
+					return testHTTPResponse(request, http.StatusOK, body), nil
+				}
+			}
+		}
+		return testHTTPResponse(request, http.StatusNotFound, "not found"), nil
+	})}
+
+	root := t.TempDir()
+	index := filepath.Join(t.TempDir(), "index.sqlite")
+	options := importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, index), HTTPClient: client,
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	}
+	source := "https://docs.test/?basePath=https%3A%2F%2Fraw.githubusercontent.com%2Ffixture%2Fdocs%2Fmain&homepage=README.md#/"
+	detection, err := importer.DetectURL(context.Background(), source, options)
+	if err != nil || detection.Engine != "docsify" || detection.Framework != "docsify" {
+		t.Fatalf("Docsify detection: %+v, %v", detection, err)
+	}
+	result, err := importer.ImportDocsify(context.Background(), "Docsify Fixture", "v1", source, options)
+	if err != nil || result.Kind != "docsify" || result.Framework != "docsify" || result.Pages != 4 || result.Sources != 4 || result.Truncated || rawRequests != 4 {
+		t.Fatalf("Docsify import: %+v, raw=%d, %v", result, rawRequests, err)
+	}
+	sourceRoot := filepath.Join(result.Destination, "documentation", "fixture", "docs", commitSHA)
+	for _, relative := range []string{"README.md", "guide.md", filepath.Join("nested", "deep.md")} {
+		if _, err := os.Stat(filepath.Join(sourceRoot, relative)); err != nil {
+			t.Fatalf("mirrored Docsify source %s: %v", relative, err)
+		}
+	}
+	var generated string
+	for _, name := range relativeFiles(t, result.Destination) {
+		if filepath.Base(name) == "_index.md" && name != "_index.md" {
+			t.Fatalf("upstream _index.md published as a nested manifest: %s", name)
+		}
+		if filepath.Ext(name) == ".md" && name != "_index.md" {
+			raw, readErr := os.ReadFile(filepath.Join(result.Destination, name))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			generated += string(raw)
+		}
+	}
+	for _, wanted := range []string{"# Docsify Fixture", "# Reserved Source Index", "<script>window.fixture = true</script>", "title: Fixture Guide", "custom: upstream", "[deep](nested/deep.md ':include')", "# Deep Source", "source_type: docsify"} {
+		if !strings.Contains(generated, wanted) {
+			t.Errorf("generated Docsify Markdown missing %q:\n%s", wanted, generated)
+		}
+	}
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	search, err := snapshot.Search(context.Background(), library.SearchRequest{DocID: "docsify-fixture-v1", Query: "complete inventory"})
+	if err != nil || search.Total == 0 {
+		t.Fatalf("indexed Docsify search: %+v, %v", search, err)
+	}
+}
+
+func TestImportDocsifyRejectsTruncatedGitHubTree(t *testing.T) {
+	const commitSHA = "5555555555555555555555555555555555555555"
+	const treeSHA = "6666666666666666666666666666666666666666"
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "docs.test":
+			return testHTTPResponse(request, http.StatusOK, `<!doctype html><html><body><div id="app"></div><script>window.$docsify = {}</script><script src="docsify.min.js"></script></body></html>`), nil
+		case "api.github.com":
+			if strings.Contains(request.URL.Path, "/commits/") {
+				return testHTTPResponse(request, http.StatusOK, `{"sha":"`+commitSHA+`","commit":{"tree":{"sha":"`+treeSHA+`"}}}`), nil
+			}
+			return testHTTPResponse(request, http.StatusOK, `{"sha":"`+treeSHA+`","truncated":true,"tree":[]}`), nil
+		default:
+			return testHTTPResponse(request, http.StatusNotFound, "not found"), nil
+		}
+	})}
+	root := t.TempDir()
+	_, err := importer.ImportDocsify(context.Background(), "Truncated Docsify", "v1", "https://docs.test/?basePath=https%3A%2F%2Fraw.githubusercontent.com%2Ffixture%2Fdocs%2Fmain", importer.Options{
+		LibraryRoot: root, Rebuild: rebuildFunc(root, filepath.Join(t.TempDir(), "index.sqlite")), HTTPClient: client,
+		HTMLScope: "path", MaxHTMLPages: -1, MaxHTMLDepth: -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("expected truncated Docsify tree rejection, got %v", err)
 	}
 }
 
