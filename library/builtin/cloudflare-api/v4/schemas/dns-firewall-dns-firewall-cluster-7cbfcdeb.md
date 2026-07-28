@@ -1,0 +1,14 @@
+---
+title: dns-firewall_dns-firewall-cluster
+page_id: schema-dns-firewall-dns-firewall-cluster-7cbfcdeb
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# dns-firewall_dns-firewall-cluster
+
+```yaml
+{"type": "object", "properties": {"attack_mitigation": {"$ref": "#/components/schemas/dns-firewall_attack_mitigation"}, "deprecate_any_requests": {"$ref": "#/components/schemas/dns-firewall_deprecate_any_requests"}, "ecs_fallback": {"$ref": "#/components/schemas/dns-firewall_ecs_fallback"}, "maximum_cache_ttl": {"$ref": "#/components/schemas/dns-firewall_maximum_cache_ttl"}, "minimum_cache_ttl": {"$ref": "#/components/schemas/dns-firewall_minimum_cache_ttl"}, "name": {"$ref": "#/components/schemas/dns-firewall_name"}, "negative_cache_ttl": {"$ref": "#/components/schemas/dns-firewall_negative_cache_ttl"}, "ratelimit": {"$ref": "#/components/schemas/dns-firewall_ratelimit"}, "retries": {"$ref": "#/components/schemas/dns-firewall_retries"}, "upstream_ips": {"$ref": "#/components/schemas/dns-firewall_upstream_ips"}}}
+```

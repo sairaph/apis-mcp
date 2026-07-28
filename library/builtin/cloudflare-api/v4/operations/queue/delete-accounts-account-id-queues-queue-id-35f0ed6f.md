@@ -1,0 +1,29 @@
+---
+title: Delete Queue
+page_id: operation-delete-accounts-account-id-queues-queue-id-3c36dc25
+path: operations/queue
+description: Deletes a queue
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - DELETE
+api_endpoints:
+    - /accounts/{account_id}/queues/{queue_id}
+operation_ids:
+    - queues-delete
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Delete Queue
+
+`DELETE /accounts/{account_id}/queues/{queue_id}`
+
+Operation ID: `queues-delete`
+
+Deletes a queue
+
+## Definition
+
+```yaml
+{"operationId": "queues-delete", "summary": "Delete Queue", "description": "Deletes a queue", "parameters": [{"name": "queue_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/mq_identifier"}}, {"name": "account_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/mq_identifier"}}], "responses": {"200": {"description": "Successful delete", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/mq_api-v4-success"}}}}, "4XX": {"description": "Failure response", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/mq_api-v4-failure"}}}}}, "security": [{"api_email": [], "api_key": [], "api_token": []}], "tags": ["Queue"], "x-api-token-group": ["Queues Write", "Workers Scripts Write"], "x-cfPermissionsRequired": {"enum": ["com.cloudflare.edge.worker.queue.delete"]}, "x-fern-availability": "generally-available", "x-fern-sdk-group-name": "queues", "x-fern-sdk-method-name": "delete", "x-forge-hidden": true}
+```

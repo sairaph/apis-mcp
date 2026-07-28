@@ -1,0 +1,14 @@
+---
+title: BYOKKey
+page_id: schema-byokkey-2f2c8ac0
+path: schemas
+source: https://openrouter.ai/openapi.json
+source_type: openapi
+imported_from: https://openrouter.ai/openapi.json
+---
+
+# BYOKKey
+
+```yaml
+{"example": {"allowed_api_key_hashes": null, "allowed_models": null, "allowed_user_ids": null, "created_at": "2025-08-24T10:30:00Z", "disabled": false, "id": "11111111-2222-3333-4444-555555555555", "is_fallback": false, "label": "sk-...AbCd", "name": "Production OpenAI Key", "provider": "openai", "sort_order": 0, "workspace_id": "550e8400-e29b-41d4-a716-446655440000"}, "properties": {"allowed_api_key_hashes": {"description": "Optional allowlist of OpenRouter API key hashes (`api_keys.hash`) that may use this credential. `null` means no restriction.", "example": ["f01d52606dc8f0a8303a7b5cc3fa07109c2e346cec7c0a16b40de462992ce943"], "items": {"type": "string"}, "maxItems": 100, "type": ["array", "null"]}, "allowed_models": {"description": "Optional allowlist of model slugs this credential may be used for. `null` means no restriction.", "example": null, "items": {"type": "string"}, "maxItems": 100, "type": ["array", "null"]}, "allowed_user_ids": {"description": "Optional allowlist of user IDs that may use this credential. `null` means no restriction.", "example": null, "items": {"type": "string"}, "maxItems": 100, "type": ["array", "null"]}, "created_at": {"description": "ISO timestamp of when the credential was created.", "example": "2025-08-24T10:30:00Z", "type": "string"}, "disabled": {"description": "Whether this credential is currently disabled.", "example": false, "type": "boolean"}, "id": {"description": "Stable public identifier for this BYOK credential.", "example": "11111111-2222-3333-4444-555555555555", "format": "uuid", "type": "string"}, "is_fallback": {"description": "Whether this credential is treated as a fallback — used only after non-fallback keys for the same provider have been tried.", "example": false, "type": "boolean"}, "label": {"description": "Short masked snippet of the key (e.g. the first/last few characters) used to identify it in the UI.", "example": "sk-...AbCd", "type": "string"}, "name": {"description": "Optional human-readable name for the credential.", "example": "Production OpenAI Key", "type": ["string", "null"]}, "provider": {"$ref": "#/components/schemas/BYOKProviderSlug"}, "sort_order": {"description": "Position within the provider — credentials are tried in ascending sort order.", "example": 0, "type": "integer"}, "workspace_id": {"description": "ID of the workspace this credential belongs to.", "example": "550e8400-e29b-41d4-a716-446655440000", "format": "uuid", "type": "string"}}, "required": ["id", "provider", "workspace_id", "label", "disabled", "is_fallback", "allowed_models", "allowed_api_key_hashes", "allowed_user_ids", "sort_order", "created_at"], "type": "object"}
+```

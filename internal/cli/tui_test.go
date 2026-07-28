@@ -291,7 +291,7 @@ func documentationFixture(t *testing.T) (*model, func()) {
 	writeTUIFixture(t, root, "test/v1/guides/start.md", "---\ntitle: Getting Started\ndescription: Guide\n---\n\n# Getting Started\n\nA searchable needle appears here.\n")
 	paths := config.Paths{Library: root, Index: t.TempDir(), Config: filepath.Join(t.TempDir(), "config.toml")}
 	snapshot, err := library.Open(context.Background(), library.Options{
-		UserRoot: root, IndexPath: filepath.Join(paths.Index, "library.sqlite"),
+		UserRoot: root, IndexPath: filepath.Join(paths.Index, "library.sqlite"), ExcludeBuiltin: true,
 	})
 	if err != nil {
 		t.Fatal(err)

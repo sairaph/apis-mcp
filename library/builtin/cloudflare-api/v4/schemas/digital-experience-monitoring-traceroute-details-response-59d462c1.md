@@ -1,0 +1,14 @@
+---
+title: digital-experience-monitoring_traceroute_details_response
+page_id: schema-digital-experience-monitoring-traceroute-details-response-59d462c1
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# digital-experience-monitoring_traceroute_details_response
+
+```yaml
+{"type": "object", "properties": {"host": {"description": "The host of the Traceroute synthetic application test.", "type": "string", "example": "1.1.1.1"}, "interval": {"description": "The interval at which the Traceroute synthetic application test is set to run.", "type": "string", "example": "0h5m0s"}, "kind": {"enum": ["traceroute"]}, "name": {"description": "The name of the Traceroute synthetic application test.", "type": "string", "example": "Atlassian Sign In Page"}, "target_policies": {"type": "array", "items": {"properties": {"default": {"description": "Whether the policy is the default for the account.", "type": "boolean"}, "id": {"$ref": "#/components/schemas/digital-experience-monitoring_uuid"}, "name": {"type": "string"}}, "required": ["id", "name", "default"], "type": "object"}, "nullable": true}, "targeted": {"type": "boolean"}, "tracerouteStats": {"type": "object", "nullable": true, "properties": {"availabilityPct": {"$ref": "#/components/schemas/digital-experience-monitoring_test_stat_pct_over_time"}, "hopsCount": {"$ref": "#/components/schemas/digital-experience-monitoring_test_stat_over_time"}, "packetLossPct": {"$ref": "#/components/schemas/digital-experience-monitoring_test_stat_pct_over_time"}, "roundTripTimeMs": {"$ref": "#/components/schemas/digital-experience-monitoring_test_stat_over_time"}, "uniqueDevicesTotal": {"description": "Count of unique devices that have run this test in the given time period.", "type": "integer", "example": 57}}, "required": ["uniqueDevicesTotal", "roundTripTimeMs", "hopsCount", "packetLossPct", "availabilityPct"]}, "tracerouteStatsByColo": {"type": "array", "items": {"properties": {"availabilityPct": {"$ref": "#/components/schemas/digital-experience-monitoring_test_stat_pct_over_time"}, "colo": {"type": "string", "example": "DFW"}, "hopsCount": {"$ref": "#/components/schemas/digital-experience-monitoring_test_stat_over_time"}, "packetLossPct": {"$ref": "#/components/schemas/digital-experience-monitoring_test_stat_pct_over_time"}, "roundTripTimeMs": {"$ref": "#/components/schemas/digital-experience-monitoring_test_stat_over_time"}, "uniqueDevicesTotal": {"description": "Count of unique devices that have run this test in the given time period.", "type": "integer", "example": 57}}, "required": ["colo", "uniqueDevicesTotal", "roundTripTimeMs", "hopsCount", "packetLossPct", "availabilityPct"], "type": "object"}}}, "required": ["kind", "name", "host", "interval"]}
+```

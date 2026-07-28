@@ -1,0 +1,14 @@
+---
+title: ObservabilitySentryDestination
+page_id: schema-observabilitysentrydestination-dd67b310
+path: schemas
+source: https://openrouter.ai/openapi.json
+source_type: openapi
+imported_from: https://openrouter.ai/openapi.json
+---
+
+# ObservabilitySentryDestination
+
+```yaml
+{"example": {"api_key_hashes": null, "config": {"dsn": "https://abc123@o0.ingest.sentry.io/0", "otlpEndpoint": "https://o0.ingest.sentry.io/api/0/otlp"}, "created_at": "2025-08-24T10:30:00Z", "enabled": true, "filter_rules": null, "id": "99999999-aaaa-bbbb-cccc-dddddddddddd", "name": "Production Sentry", "privacy_mode": false, "sampling_rate": 1, "type": "sentry", "updated_at": "2025-08-24T15:45:00Z", "workspace_id": "550e8400-e29b-41d4-a716-446655440000"}, "properties": {"api_key_hashes": {"description": "Optional allowlist of OpenRouter API key hashes (`api_keys.hash`) whose traffic is forwarded to this destination. `null` means all keys.", "example": null, "items": {"type": "string"}, "type": ["array", "null"]}, "config": {"properties": {"dsn": {"minLength": 1, "pattern": "^https:\\/\\/([^:@]+)(?::[^@]*)?@([^/]+)(?:\\/[^/]+)*\\/(\\d+)\\/?$", "type": "string"}, "headers": {"additionalProperties": {"type": "string"}, "description": "Custom HTTP headers to include in requests to this destination.", "type": "object"}, "otlpEndpoint": {"type": "string"}}, "required": ["otlpEndpoint", "dsn"], "type": "object"}, "created_at": {"description": "ISO timestamp of when the destination was created.", "example": "2025-08-24T10:30:00Z", "type": "string"}, "enabled": {"description": "Whether this destination is currently enabled.", "example": true, "type": "boolean"}, "filter_rules": {"$ref": "#/components/schemas/ObservabilityFilterRulesConfig"}, "id": {"description": "Stable public identifier for this destination.", "example": "99999999-aaaa-bbbb-cccc-dddddddddddd", "format": "uuid", "type": "string"}, "name": {"description": "Human-readable name for the destination.", "example": "Production Langfuse", "type": ["string", "null"]}, "privacy_mode": {"description": "When true, request/response bodies are not forwarded to this destination — only metadata.", "example": false, "type": "boolean"}, "sampling_rate": {"description": "Sampling rate for events sent to this destination, between 0.0001 and 1 (1 = 100%).", "example": 1, "format": "double", "type": "number"}, "type": {"enum": ["sentry"], "type": "string"}, "updated_at": {"description": "ISO timestamp of when the destination was last updated.", "example": "2025-08-24T15:45:00Z", "type": "string"}, "workspace_id": {"description": "ID of the workspace this destination belongs to.", "example": "550e8400-e29b-41d4-a716-446655440000", "format": "uuid", "type": "string"}}, "required": ["id", "workspace_id", "name", "enabled", "privacy_mode", "sampling_rate", "api_key_hashes", "filter_rules", "created_at", "updated_at", "type", "config"], "type": "object"}
+```

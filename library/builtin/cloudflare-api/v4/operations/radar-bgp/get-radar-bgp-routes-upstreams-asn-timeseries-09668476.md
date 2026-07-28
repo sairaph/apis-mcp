@@ -1,0 +1,29 @@
+---
+title: Get upstream composition time series for an AS
+page_id: operation-get-radar-bgp-routes-upstreams-asn-timeseries-0f61f138
+path: operations/radar-bgp
+description: Retrieves the share of an AS’s observed paths carried by each direct upstream over time, derived from RouteViews RIB snapshots across all collectors (the combined product). Each upstream ASN is returned as its own series of shares (0–1); the least-significant upstreams beyond the requested limit are grouped into an "OTHER" series. Series share a common set of timestamps.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - GET
+api_endpoints:
+    - /radar/bgp/routes/upstreams/{asn}/timeseries
+operation_ids:
+    - radar-get-bgp-routes-upstreams-timeseries
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Get upstream composition time series for an AS
+
+`GET /radar/bgp/routes/upstreams/{asn}/timeseries`
+
+Operation ID: `radar-get-bgp-routes-upstreams-timeseries`
+
+Retrieves the share of an AS’s observed paths carried by each direct upstream over time, derived from RouteViews RIB snapshots across all collectors (the combined product). Each upstream ASN is returned as its own series of shares (0–1); the least-significant upstreams beyond the requested limit are grouped into an "OTHER" series. Series share a common set of timestamps.
+
+## Definition
+
+```yaml
+{"operationId": "radar-get-bgp-routes-upstreams-timeseries", "summary": "Get upstream composition time series for an AS", "description": "Retrieves the share of an AS’s observed paths carried by each direct upstream over time, derived from RouteViews RIB snapshots across all collectors (the combined product). Each upstream ASN is returned as its own series of shares (0–1); the least-significant upstreams beyond the requested limit are grouped into an \"OTHER\" series. Series share a common set of timestamps.", "parameters": [{"name": "asn", "in": "path", "description": "Single Autonomous System Number (ASN) as integer.", "required": true, "schema": {"description": "Single Autonomous System Number (ASN) as integer.", "type": "integer", "example": 174}}, {"name": "ipVersion", "in": "query", "description": "Address family of the observed paths. Defaults to IPv4.", "schema": {"description": "Address family of the observed paths. Defaults to IPv4.", "type": "string", "example": "IPv4", "default": "IPv4", "enum": ["IPv4", "IPv6"]}}, {"name": "dateStart", "in": "query", "description": "Start of the date range (inclusive). Alternative to `dateRange`; provide together with `dateEnd`.", "schema": {"description": "Start of the date range (inclusive). Alternative to `dateRange`; provide together with `dateEnd`.", "type": "string", "format": "date-time", "example": "2023-09-01T11:41:33.782Z"}}, {"name": "dateEnd", "in": "query", "description": "End of the date range (inclusive). Alternative to `dateRange`; provide together with `dateStart`.", "schema": {"description": "End of the date range (inclusive). Alternative to `dateRange`; provide together with `dateStart`.", "type": "string", "format": "date-time", "example": "2023-09-01T11:41:33.782Z"}}, {"name": "limit", "in": "query", "description": "Number of upstream ASNs to return as separate series, ranked by the first bucket. Remaining upstreams are grouped into an \"OTHER\" series. Defaults to 5.", "schema": {"description": "Number of upstream ASNs to return as separate series, ranked by the first bucket. Remaining upstreams are grouped into an \"OTHER\" series. Defaults to 5.", "type": "integer", "example": 5}}, {"name": "format", "in": "query", "description": "Format in which results will be returned.", "schema": {"description": "Format in which results will be returned.", "type": "string", "example": "json", "enum": ["JSON", "CSV"]}}], "responses": {"200": {"description": "Successful response.", "content": {"application/json": {"schema": {"type": "object", "properties": {"result": {"type": "object", "properties": {"meta": {"type": "object", "properties": {"dataTime": {"description": "Timestamp of the underlying RIB data.", "type": "string", "format": "date-time", "nullable": true}, "effectiveCollector": {"type": "string", "nullable": true}, "queryTime": {"description": "Timestamp when the query was executed.", "type": "string", "format": "date-time", "nullable": true}, "stale": {"type": "boolean"}}, "required": ["dataTime", "queryTime", "effectiveCollector", "stale"]}, "serie_0": {"type": "object", "example": {"174": ["0.7", "0.6"], "OTHER": ["0.1", "0.4"], "timestamps": ["2026-06-01T00:00:00Z", "2026-06-01T00:15:00Z"]}, "additionalProperties": {"items": {"description": "A numeric string.", "example": "10", "pattern": "^-?\\d+(\\.\\d+)?$", "type": "string"}, "type": "array"}, "properties": {"timestamps": {"type": "array", "items": {"format": "date-time", "type": "string"}}}, "required": ["timestamps"]}}, "required": ["serie_0", "meta"]}, "success": {"type": "boolean", "example": true}}, "required": ["result", "success"]}}}}, "400": {"description": "Bad request.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"message": {"type": "string"}}, "required": ["message"], "type": "object"}}, "result": {"type": "object"}, "success": {"type": "boolean", "example": false}}, "required": ["result", "success", "errors"]}}}}}, "security": [{"api_email": [], "api_key": [], "api_token": []}], "tags": ["Radar BGP"], "x-api-token-group": ["User Details Write", "User Details Read"], "x-cfPlanAvailability": {"business": true, "enterprise": true, "free": true, "pro": true}, "x-fern-availability": "generally-available", "x-fern-sdk-group-name": "radar.bgp.routes.upstreams", "x-fern-sdk-method-name": "timeseries", "x-forge-hidden": true}
+```

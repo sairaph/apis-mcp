@@ -1,0 +1,14 @@
+---
+title: rulesets_SetCacheTagsRule
+page_id: schema-rulesets-setcachetagsrule-04405362
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# rulesets_SetCacheTagsRule
+
+```yaml
+{"allOf": [{"$ref": "#/components/schemas/rulesets_Rule"}, {"properties": {"action": {"enum": ["set_cache_tags"]}, "action_parameters": {"oneOf": [{"description": "Add cache tags using a list of values.", "properties": {"operation": {"allOf": [{"$ref": "#/components/schemas/rulesets_SetCacheTagsOperation"}, {"enum": ["add"]}]}, "values": {"$ref": "#/components/schemas/rulesets_SetCacheTagsValues"}}, "required": ["operation", "values"], "title": "Add Cache Tags (Values)", "type": "object"}, {"description": "Add cache tags using an expression.", "properties": {"expression": {"$ref": "#/components/schemas/rulesets_SetCacheTagsExpression"}, "operation": {"allOf": [{"$ref": "#/components/schemas/rulesets_SetCacheTagsOperation"}, {"enum": ["add"]}]}}, "required": ["operation", "expression"], "title": "Add Cache Tags (Expression)", "type": "object"}, {"description": "Remove cache tags using a list of values.", "properties": {"operation": {"allOf": [{"$ref": "#/components/schemas/rulesets_SetCacheTagsOperation"}, {"enum": ["remove"]}]}, "values": {"$ref": "#/components/schemas/rulesets_SetCacheTagsValues"}}, "required": ["operation", "values"], "title": "Remove Cache Tags (Values)", "type": "object"}, {"description": "Remove cache tags using an expression.", "properties": {"expression": {"$ref": "#/components/schemas/rulesets_SetCacheTagsExpression"}, "operation": {"allOf": [{"$ref": "#/components/schemas/rulesets_SetCacheTagsOperation"}, {"enum": ["remove"]}]}}, "required": ["operation", "expression"], "title": "Remove Cache Tags (Expression)", "type": "object"}, {"description": "Set cache tags using a list of values.", "properties": {"operation": {"allOf": [{"$ref": "#/components/schemas/rulesets_SetCacheTagsOperation"}, {"enum": ["set"]}]}, "values": {"$ref": "#/components/schemas/rulesets_SetCacheTagsValues"}}, "required": ["operation", "values"], "title": "Set Cache Tags (Values)", "type": "object"}, {"description": "Set cache tags using an expression.", "properties": {"expression": {"$ref": "#/components/schemas/rulesets_SetCacheTagsExpression"}, "operation": {"allOf": [{"$ref": "#/components/schemas/rulesets_SetCacheTagsOperation"}, {"enum": ["set"]}]}}, "required": ["operation", "expression"], "title": "Set Cache Tags (Expression)", "type": "object"}]}, "description": {"example": "Modify the cache tags associated with the response."}}, "title": "Set Cache Tags Rule"}]}
+```

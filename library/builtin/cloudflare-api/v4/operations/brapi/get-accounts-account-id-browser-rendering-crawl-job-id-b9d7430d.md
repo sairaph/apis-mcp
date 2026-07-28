@@ -1,0 +1,29 @@
+---
+title: Get crawl result.
+page_id: operation-get-accounts-account-id-browser-rendering-crawl-job-id-0e53eafd
+path: operations/brapi
+description: Returns the result of a crawl job.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - GET
+api_endpoints:
+    - /accounts/{account_id}/browser-rendering/crawl/{job_id}
+operation_ids:
+    - brapi-get_CrawlResult
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Get crawl result.
+
+`GET /accounts/{account_id}/browser-rendering/crawl/{job_id}`
+
+Operation ID: `brapi-get_CrawlResult`
+
+Returns the result of a crawl job.
+
+## Definition
+
+```yaml
+{"operationId": "brapi-get_CrawlResult", "summary": "Get crawl result.", "description": "Returns the result of a crawl job.", "parameters": [{"name": "account_id", "in": "path", "description": "Account ID.", "required": true, "schema": {"description": "Account ID.", "type": "string"}}, {"name": "job_id", "in": "path", "description": "Crawl job ID.", "required": true, "schema": {"description": "Crawl job ID.", "type": "string", "minLength": 1}}, {"name": "cacheTTL", "in": "query", "description": "Cache TTL default is 5s. Set to 0 to disable.", "schema": {"description": "Cache TTL default is 5s. Set to 0 to disable.", "type": "number", "default": 5, "maximum": 86400, "minimum": 0}}, {"name": "status", "in": "query", "description": "Filter by URL status.", "schema": {"description": "Filter by URL status.", "type": "string", "enum": ["queued", "errored", "completed", "disallowed", "skipped", "cancelled"]}}, {"name": "cursor", "in": "query", "description": "Cursor for pagination.", "schema": {"description": "Cursor for pagination.", "type": "number", "default": 0}}, {"name": "limit", "in": "query", "description": "Limit for pagination.", "schema": {"description": "Limit for pagination.", "type": "number", "default": 50}}], "responses": {"200": {"description": "Returns the result of a crawl job.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"code": {"description": "Error code.", "type": "number"}, "message": {"description": "Error message.", "type": "string"}}, "required": ["message", "code"], "type": "object"}}, "result": {"type": "object", "additionalProperties": false, "properties": {"browserSecondsUsed": {"description": "Total seconds spent in browser so far.", "type": "number"}, "cursor": {"description": "Cursor for pagination.", "type": "string"}, "finished": {"description": "Total number of URLs that have been crawled so far.", "type": "number"}, "id": {"description": "Crawl job ID.", "type": "string"}, "records": {"description": "List of crawl job records.", "type": "array", "items": {"additionalProperties": false, "properties": {"html": {"description": "HTML content of the crawled URL.", "type": "string"}, "json": {"description": "JSON of the content of the crawled URL.", "type": "object", "additionalProperties": {"nullable": true, "type": "object"}}, "markdown": {"description": "Markdown of the content of the crawled URL.", "type": "string"}, "metadata": {"type": "object", "properties": {"status": {"description": "HTTP status code of the crawled page.", "type": "number"}, "title": {"description": "Title of the crawled page.", "type": "string"}, "url": {"description": "Final URL of the crawled page.", "type": "string"}}, "required": ["url", "status"]}, "status": {"description": "Current status of the crawled URL.", "type": "string", "enum": ["queued", "errored", "completed", "disallowed", "skipped", "cancelled"]}, "url": {"description": "Crawled URL.", "type": "string"}}, "required": ["url", "status", "metadata"], "type": "object"}}, "skipped": {"description": "Total number of URLs that were skipped due to include/exclude/subdomain filters. Skipped URLs are included in records but are not counted toward total/finished.", "type": "number"}, "status": {"description": "Current crawl job status.", "type": "string"}, "total": {"description": "Total current number of URLs in the crawl job.", "type": "number"}}, "required": ["id", "status", "browserSecondsUsed", "total", "finished", "skipped", "records"]}, "success": {"description": "Response status.", "type": "boolean"}}, "required": ["success", "result"]}}}}, "400": {"description": "The request contains errors or didn't properly encode content.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"code": {"description": "Error code.", "type": "number"}, "message": {"description": "Error message.", "type": "string"}}, "required": ["message", "code"], "type": "object"}}, "success": {"description": "Response status.", "type": "boolean"}}, "required": ["success"]}}}}, "500": {"description": "Internal server error.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"code": {"description": "Error code.", "type": "number"}, "message": {"description": "Error message.", "type": "string"}}, "required": ["message", "code"], "type": "object"}}, "success": {"description": "Response status.", "type": "boolean"}}, "required": ["success"]}}}}}, "security": [{"api_email": [], "api_key": [], "api_token": []}], "tags": ["brapi"], "x-api-token-group": ["Browser Rendering Write", "Browser Rendering Read"], "x-cfPermissionsRequired": {"enum": ["com.cloudflare.api.account.brapi.read"], "type": "string"}, "x-cfPlanAvailability": {"business": true, "enterprise": true, "free": true, "pro": true}, "x-fern-availability": "generally-available", "x-fern-sdk-group-name": "browser-run.crawl", "x-fern-sdk-method-name": "get", "x-forge-hidden": true}
+```

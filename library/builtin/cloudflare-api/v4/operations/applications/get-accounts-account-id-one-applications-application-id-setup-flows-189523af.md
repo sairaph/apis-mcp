@@ -1,0 +1,29 @@
+---
+title: Get application setup flows
+page_id: operation-get-accounts-account-id-one-applications-application-id-setup-flows-46c93601
+path: operations/applications
+description: Returns all available setup flows for the application, one per auth method.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - GET
+api_endpoints:
+    - /accounts/{account_id}/one/applications/{application_id}/setup-flows
+operation_ids:
+    - get_application_setup_flows_v2
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Get application setup flows
+
+`GET /accounts/{account_id}/one/applications/{application_id}/setup-flows`
+
+Operation ID: `get_application_setup_flows_v2`
+
+Returns all available setup flows for the application, one per auth method.
+
+## Definition
+
+```yaml
+{"operationId": "get_application_setup_flows_v2", "summary": "Get application setup flows", "description": "Returns all available setup flows for the application, one per auth method.", "parameters": [{"name": "account_id", "in": "path", "description": "Cloudflare account identifier.", "required": true, "schema": {"type": "string", "example": "023e105f4ecef8ad9ca31a8372d0c353"}}, {"name": "application_id", "in": "path", "description": "Application/vendor identifier.", "required": true, "schema": {"type": "string", "enum": ["ANTHROPIC", "BITBUCKET", "BOX", "CONFLUENCE", "DROPBOX", "GITHUB", "GOOGLE_CLOUD_PLATFORM", "GOOGLE_WORKSPACE", "JIRA", "MICROSOFT_INTERNAL", "OPENAI", "SALESFORCE", "SLACK"]}}, {"name": "auth_method", "in": "query", "description": "Filter by auth method id. Get available ids from GET /v2/applications.", "schema": {"type": "string"}}, {"name": "environment", "in": "query", "description": "Filter by environment.", "schema": {"type": "string", "enum": ["fedramp", "standard"]}}], "responses": {"200": {"description": "List of setup flows.", "content": {"application/json": {"examples": {"ComplexFlow": {"summary": "Google Workspace Service Account with dynamic content", "value": [{"default": true, "description": "Connect via a Google Cloud Service Account with Domain-Wide Delegation.", "id": "google_workspace_service_account", "name": "Google Workspace (Service Account)", "steps": [{"component_id": "common/name_integration", "parameters": null, "type": "component"}, {"description": "In the Google Cloud Console, create a service account...", "dynamic_content": null, "title": "Create a Service Account", "type": "instruction"}, {"description": "Upload the JSON service account key file.", "dynamic_content": null, "form_fields": [{"label": "Service Account JSON File", "name": "service_account_credentials", "placeholder": null, "required": true, "supported_file_types": [".json"], "type": "file_upload"}], "is_required": true, "title": "Upload JSON Key", "type": "form_input"}, {"description": "Navigate to your Google admin console and add the client ID.", "dynamic_content": [{"label": "Client ID", "type": "copy_block", "value_from": "credentials.client_id"}, {"label": "OAuth Scopes", "type": "copy_block", "value_from": "required_scopes"}, {"label": "Open Domain-Wide Delegation Settings", "type": "external_link", "url_template": "https://admin.google.com/ac/owl/domainwidedelegation"}], "title": "Delegate Domain-Wide Authority", "type": "instruction"}, {"description": "Provide the email of a Google Workspace Super Administrator.", "dynamic_content": null, "form_fields": [{"label": "Super Administrator Email", "name": "administrator_email", "placeholder": "admin@your-domain.com", "required": true, "supported_file_types": null, "type": "email"}], "is_required": true, "title": "Confirm Administrator Email", "type": "form_input"}], "supported_environments": ["standard"]}]}, "OAuthFlow": {"summary": "Microsoft OAuth 2.0 setup flow", "value": [{"auth_config": {"authorization_url": "https://login.microsoftonline.com/common/adminconsent", "client_id": "abc123-def456", "requires_pkce": false, "scopes": ["https://graph.microsoft.com/.default"], "url_placeholders": []}, "default": true, "description": "Connect to Microsoft using OAuth 2.0 Admin Consent.", "id": "microsoft_internal_oauth2", "name": "Microsoft (OAuth 2.0 Admin Consent)", "steps": [{"component_id": "common/name_integration", "parameters": null, "type": "component"}, {"description": "Click the button to be redirected to the vendor and grant access.", "dynamic_content": null, "title": "Authorize Application", "type": "oauth_redirect"}], "supported_environments": ["standard", "fedramp"]}]}, "SimpleAPIKeyFlow": {"summary": "Anthropic Admin API Key setup flow", "value": [{"auth_config": {"authorization_url": null, "client_id": null, "requires_pkce": false, "scopes": [], "url_placeholders": []}, "default": true, "description": "Connect to Anthropic using an admin API key.", "id": "anthropic_admin_api_key", "name": "Anthropic Admin API Key", "steps": [{"component_id": "common/name_integration", "parameters": null, "type": "component"}, {"description": "Generate an Admin API key in the Anthropic Console.", "dynamic_content": null, "form_fields": [{"label": "Admin API Key", "name": "api_key", "placeholder": null, "required": true, "supported_file_types": null, "type": "password"}], "is_required": true, "title": "Provide Admin API Key", "type": "form_input"}], "supported_environments": ["standard"]}]}}, "schema": {"type": "array", "items": {"$ref": "#/components/schemas/one_SetupFlow"}}}}}, "404": {"description": "Application not found or no flows available."}}, "security": [{"api_token": []}, {"api_email": [], "api_key": []}], "tags": ["Applications"], "x-fern-availability": "generally-available", "x-fern-sdk-group-name": "zero_trust.casb.applications.setup_flows", "x-fern-sdk-method-name": "list", "x-forge-hidden": true, "x-stability": "beta"}
+```

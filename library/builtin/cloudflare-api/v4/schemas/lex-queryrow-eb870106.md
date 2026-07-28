@@ -1,0 +1,14 @@
+---
+title: lex_QueryRow
+page_id: schema-lex-queryrow-eb870106
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# lex_QueryRow
+
+```yaml
+{"type": "object", "additionalProperties": true}
+```

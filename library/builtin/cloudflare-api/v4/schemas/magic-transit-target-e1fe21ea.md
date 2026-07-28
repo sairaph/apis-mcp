@@ -1,0 +1,17 @@
+---
+title: magic-transit_target
+page_id: schema-magic-transit-target-e1fe21ea
+path: schemas
+description: The target hostname, IPv6, or IPv6 address.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# magic-transit_target
+
+The target hostname, IPv6, or IPv6 address.
+
+```yaml
+{"description": "The target hostname, IPv6, or IPv6 address.", "type": "string", "example": "1.1.1.1"}
+```

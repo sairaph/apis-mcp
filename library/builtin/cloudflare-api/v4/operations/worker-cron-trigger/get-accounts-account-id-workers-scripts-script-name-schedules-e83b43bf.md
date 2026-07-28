@@ -1,0 +1,29 @@
+---
+title: Get Cron Triggers
+page_id: operation-get-accounts-account-id-workers-scripts-script-name-schedules-6975608b
+path: operations/worker-cron-trigger
+description: Fetches Cron Triggers for a Worker.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - GET
+api_endpoints:
+    - /accounts/{account_id}/workers/scripts/{script_name}/schedules
+operation_ids:
+    - worker-cron-trigger-get-cron-triggers
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Get Cron Triggers
+
+`GET /accounts/{account_id}/workers/scripts/{script_name}/schedules`
+
+Operation ID: `worker-cron-trigger-get-cron-triggers`
+
+Fetches Cron Triggers for a Worker.
+
+## Definition
+
+```yaml
+{"operationId": "worker-cron-trigger-get-cron-triggers", "summary": "Get Cron Triggers", "description": "Fetches Cron Triggers for a Worker.", "parameters": [{"name": "account_id", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/workers_identifier"}}, {"name": "script_name", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/workers_script_name"}}], "responses": {"200": {"description": "Get Cron Triggers response.", "content": {"application/json": {"schema": {"allOf": [{"$ref": "#/components/schemas/workers_api-response-common"}, {"properties": {"result": {"type": "object", "properties": {"schedules": {"type": "array", "items": {"$ref": "#/components/schemas/workers_schedule"}}}, "required": ["schedules"]}}, "required": ["result"], "type": "object"}]}}}}, "4XX": {"description": "Get Cron Triggers response failure.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/workers_api-response-common-failure"}}}}}, "security": [{"api_token": []}, {"api_email": [], "api_key": []}], "tags": ["Worker Cron Trigger"], "x-api-token-group": ["Workers Scripts Write", "Workers Scripts Read"], "x-fern-availability": "generally-available", "x-fern-sdk-group-name": "workers.scripts.schedules", "x-fern-sdk-method-name": "get", "x-forge-hidden": true}
+```

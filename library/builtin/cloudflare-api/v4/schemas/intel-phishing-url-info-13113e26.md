@@ -1,0 +1,14 @@
+---
+title: intel_phishing-url-info
+page_id: schema-intel-phishing-url-info-13113e26
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# intel_phishing-url-info
+
+```yaml
+{"type": "object", "properties": {"categorizations": {"description": "List of categorizations applied to this submission.", "type": "array", "items": {"properties": {"category": {"description": "Name of the category applied.", "type": "string", "example": "PHISHING", "x-auditable": true}, "verification_status": {"description": "Result of human review for this categorization.", "type": "string", "example": "confirmed", "x-auditable": true}}, "type": "object"}}, "model_results": {"description": "List of model results for completed scans.", "type": "array", "items": {"properties": {"model_name": {"description": "Name of the model.", "type": "string", "example": "MACHINE_LEARNING_v2", "x-auditable": true}, "model_score": {"description": "This is the score that is outputted by the model for this submission.", "type": "number", "example": 0.024}}, "type": "object"}}, "rule_matches": {"description": "List of signatures that matched against site content found when crawling the URL.", "type": "array", "items": {"properties": {"banning": {"description": "For internal use.", "type": "boolean"}, "blocking": {"description": "For internal use.", "type": "boolean"}, "description": {"description": "Description of the signature that matched.", "type": "string", "example": "Match frequently used social followers phishing kit", "x-auditable": true}, "name": {"description": "Name of the signature that matched.", "type": "string", "example": "phishkit.social_followers", "x-auditable": true}}, "type": "object"}}, "scan_status": {"description": "Status of the most recent scan found.", "type": "object", "properties": {"last_processed": {"description": "Timestamp of when the submission was processed.", "type": "string", "example": "Wed, 26 Oct 2022 16:04:51 GMT", "x-auditable": true}, "scan_complete": {"description": "For internal use.", "type": "boolean"}, "status_code": {"description": "Status code that the crawler received when loading the submitted URL.", "type": "integer", "x-auditable": true}, "submission_id": {"description": "ID of the most recent submission.", "type": "integer", "x-auditable": true}}}, "screenshot_download_signature": {"description": "For internal use.", "type": "string"}, "screenshot_path": {"description": "For internal use.", "type": "string"}, "url": {"description": "URL that was submitted.", "type": "string", "example": "https://www.cloudflare.com", "x-auditable": true}}}
+```

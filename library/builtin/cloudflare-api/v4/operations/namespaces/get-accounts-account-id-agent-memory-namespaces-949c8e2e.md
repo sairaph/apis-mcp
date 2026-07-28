@@ -1,0 +1,35 @@
+---
+title: List namespaces
+page_id: operation-get-accounts-account-id-agent-memory-namespaces-394c668a
+path: operations/namespaces
+description: Lists all namespaces for the given account. Results are paginated.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - GET
+api_endpoints:
+    - /accounts/{account_id}/agent-memory/namespaces
+operation_ids:
+    - agent-memory-namespace-list
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# List namespaces
+
+`GET /accounts/{account_id}/agent-memory/namespaces`
+
+Operation ID: `agent-memory-namespace-list`
+
+Lists all namespaces for the given account. Results are paginated.
+
+## Path Parameters
+
+```yaml
+[{"name": "account_id", "in": "path", "description": "Cloudflare Account ID.", "required": true, "schema": {"type": "string", "minLength": 1, "pattern": "^\\d+$"}}]
+```
+
+## Definition
+
+```yaml
+{"operationId": "agent-memory-namespace-list", "summary": "List namespaces", "description": "Lists all namespaces for the given account. Results are paginated.", "parameters": [{"name": "per_page", "in": "query", "schema": {"description": "Number of results per page.", "type": "integer", "example": 20, "maximum": 1000, "minimum": 1}}, {"name": "order", "in": "query", "schema": {"type": "string", "enum": ["id", "name"]}}, {"name": "direction", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}}, {"name": "cursor", "in": "query", "schema": {"type": "string"}}], "responses": {"200": {"description": "A List of namespaces.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"description": "Always empty for a successful response.", "type": "array", "items": {"properties": {"code": {"description": "Machine-readable status code.", "type": "number", "example": 1003}, "documentation_url": {"description": "Link to relevant documentation, when available.", "type": "string"}, "message": {"description": "Human-readable message describing the error or status.", "type": "string", "example": "namespace not found"}, "source": {"type": "object", "properties": {"pointer": {"description": "JSON pointer to the request field that caused the error.", "type": "string", "example": "/name"}}}}, "required": ["code", "message"], "type": "object"}, "example": []}, "messages": {"description": "Informational, non-error messages, if any.", "type": "array", "items": {"properties": {"code": {"description": "Machine-readable status code.", "type": "number", "example": 1003}, "documentation_url": {"description": "Link to relevant documentation, when available.", "type": "string"}, "message": {"description": "Human-readable message describing the error or status.", "type": "string", "example": "namespace not found"}, "source": {"type": "object", "properties": {"pointer": {"description": "JSON pointer to the request field that caused the error.", "type": "string", "example": "/name"}}}}, "required": ["code", "message"], "type": "object"}, "example": []}, "result": {"type": "array", "items": {"properties": {"created_at": {"description": "Time the namespace was created.", "type": "string", "format": "date-time", "example": "2025-09-21T14:30:00.000Z"}, "id": {"description": "Unique identifier of the namespace.", "type": "string", "example": "01JSGCEXAMPLE000000000000"}, "name": {"description": "Namespace name.", "type": "string", "example": "support-agent"}, "updated_at": {"description": "Time the namespace was last updated.", "type": "string", "format": "date-time", "example": "2025-09-21T14:30:00.000Z"}}, "required": ["id", "name", "created_at", "updated_at"], "type": "object"}}, "result_info": {"type": "object", "properties": {"count": {"description": "Number of results returned in this page.", "type": "integer", "example": 1}, "cursor": {"description": "Opaque cursor for the next page; omitted on the last page.", "type": "string", "example": "01JSGCEXAMPLE000000000000"}, "per_page": {"description": "Page size used for this query.", "type": "integer", "example": 20}}}, "success": {"description": "Always true for a successful response.", "enum": [true]}}, "required": ["result", "success", "errors", "messages"]}}}}, "4XX": {"description": "Error response.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"description": "One or more errors describing what went wrong.", "type": "array", "items": {"properties": {"code": {"description": "Machine-readable status code.", "type": "number", "example": 1003}, "documentation_url": {"description": "Link to relevant documentation, when available.", "type": "string"}, "message": {"description": "Human-readable message describing the error or status.", "type": "string", "example": "namespace not found"}, "source": {"type": "object", "properties": {"pointer": {"description": "JSON pointer to the request field that caused the error.", "type": "string", "example": "/name"}}}}, "required": ["code", "message"], "type": "object"}, "example": [{"code": 1003, "message": "namespace not found"}]}, "messages": {"description": "Informational, non-error messages, if any.", "type": "array", "items": {"properties": {"code": {"description": "Machine-readable status code.", "type": "number", "example": 1003}, "documentation_url": {"description": "Link to relevant documentation, when available.", "type": "string"}, "message": {"description": "Human-readable message describing the error or status.", "type": "string", "example": "namespace not found"}, "source": {"type": "object", "properties": {"pointer": {"description": "JSON pointer to the request field that caused the error.", "type": "string", "example": "/name"}}}}, "required": ["code", "message"], "type": "object"}, "example": []}, "result": {"description": "Always null for an error response.", "type": "object", "nullable": true}, "success": {"description": "Always false for an error response.", "enum": [false]}}, "required": ["result", "success", "errors", "messages"]}}}}}, "security": [{"api_token": []}], "tags": ["Namespaces"]}
+```

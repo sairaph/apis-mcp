@@ -1,0 +1,29 @@
+---
+title: List deployed Workflow versions
+page_id: operation-get-accounts-account-id-workflows-workflow-name-versions-64a872e8
+path: operations/workflows
+description: Lists all deployed versions of a workflow.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - GET
+api_endpoints:
+    - /accounts/{account_id}/workflows/{workflow_name}/versions
+operation_ids:
+    - wor-list-workflow-versions
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# List deployed Workflow versions
+
+`GET /accounts/{account_id}/workflows/{workflow_name}/versions`
+
+Operation ID: `wor-list-workflow-versions`
+
+Lists all deployed versions of a workflow.
+
+## Definition
+
+```yaml
+{"operationId": "wor-list-workflow-versions", "summary": "List deployed Workflow versions", "description": "Lists all deployed versions of a workflow.", "parameters": [{"name": "workflow_name", "in": "path", "required": true, "schema": {"type": "string", "maxLength": 64, "minLength": 1, "pattern": "^[a-zA-Z0-9_][a-zA-Z0-9-_]*$"}}, {"name": "per_page", "in": "query", "schema": {"type": "number", "default": 50, "maximum": 100, "minimum": 1}}, {"name": "page", "in": "query", "schema": {"type": "number", "default": 1, "minimum": 1}}, {"name": "account_id", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "List deployed workflow versions.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"code": {"type": "number"}, "message": {"type": "string"}}, "required": ["code", "message"], "type": "object"}}, "messages": {"type": "array", "items": {"properties": {"code": {"type": "number"}, "message": {"type": "string"}}, "required": ["code", "message"], "type": "object"}}, "result": {"type": "array", "items": {"properties": {"class_name": {"type": "string"}, "created_on": {"type": "string", "format": "date-time"}, "default_retention": {"type": "object", "properties": {"error_retention": {"description": "Default error retention in milliseconds.", "type": "integer"}, "success_retention": {"description": "Default success retention in milliseconds.", "type": "integer"}}}, "has_dag": {"type": "boolean"}, "id": {"type": "string", "format": "uuid"}, "language": {"description": "The programming language of the workflow implementation", "type": "string", "enum": ["javascript", "python"]}, "limits": {"type": "object", "properties": {"steps": {"type": "integer", "minimum": 1}}}, "modified_on": {"type": "string", "format": "date-time"}, "workflow_id": {"type": "string", "format": "uuid"}}, "required": ["created_on", "modified_on", "id", "workflow_id", "class_name", "has_dag", "language"], "type": "object"}}, "result_info": {"type": "object", "properties": {"count": {"type": "number"}, "cursor": {"type": "string"}, "page": {"type": "number"}, "per_page": {"type": "number"}, "total_count": {"type": "number"}, "total_pages": {"type": "number"}}, "required": ["per_page", "count", "total_count"]}, "success": {"type": "boolean", "enum": [true]}}, "required": ["success", "errors", "result", "messages"]}}}}, "400": {"description": "Bad Request.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"code": {"type": "number"}, "message": {"type": "string"}}, "required": ["code", "message"], "type": "object"}}, "messages": {"type": "array", "items": {"type": "string"}}, "result": {"type": "object", "enum": [null], "nullable": true}, "success": {"type": "boolean", "enum": [false]}}, "required": ["success", "messages", "errors", "result"]}}}}}, "security": [{"api_email": [], "api_key": [], "api_token": []}], "tags": ["Workflows"], "x-api-token-group": ["Workers Tail Read", "Workers Scripts Write", "Workers Scripts Read"], "x-cfPermissionsRequired": {"enum": ["com.cloudflare.api.workers.write", "com.cloudflare.api.workers.read"]}, "x-cfPlanAvailability": {"business": true, "enterprise": true, "free": true, "pro": true}, "x-fern-availability": "generally-available", "x-fern-sdk-group-name": "workflows.versions", "x-fern-sdk-method-name": "list"}
+```

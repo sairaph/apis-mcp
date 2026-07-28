@@ -1,0 +1,14 @@
+---
+title: issuing_network_token_wallet_provider
+page_id: schema-issuing-network-token-wallet-provider-5b8662f7
+path: schemas
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# issuing_network_token_wallet_provider
+
+```yaml
+{"title": "IssuingNetworkTokenWalletProvider", "type": "object", "properties": {"account_id": {"maxLength": 5000, "type": "string", "description": "The wallet provider-given account ID of the digital wallet the token belongs to."}, "account_trust_score": {"type": "integer", "description": "An evaluation on the trustworthiness of the wallet account between 1 and 5. A higher score indicates more trustworthy."}, "card_number_source": {"type": "string", "description": "The method used for tokenizing a card.", "enum": ["app", "manual", "on_file", "other"]}, "cardholder_address": {"$ref": "#/components/schemas/issuing_network_token_address"}, "cardholder_name": {"maxLength": 5000, "type": "string", "description": "The name of the cardholder tokenizing the card."}, "device_trust_score": {"type": "integer", "description": "An evaluation on the trustworthiness of the device. A higher score indicates more trustworthy."}, "hashed_account_email_address": {"maxLength": 5000, "type": "string", "description": "The hashed email address of the cardholder's account with the wallet provider."}, "reason_codes": {"type": "array", "description": "The reasons for suggested tokenization given by the card network.", "items": {"type": "string", "enum": ["account_card_too_new", "account_recently_changed", "account_too_new", "account_too_new_since_launch", "additional_device", "data_expired", "defer_id_v_decision", "device_recently_lost", "good_activity_history", "has_suspended_tokens", "high_risk", "inactive_account", "long_account_tenure", "low_account_score", "low_device_score", "low_phone_number_score", "network_service_error", "outside_home_territory", "provisioning_cardholder_mismatch", "provisioning_device_and_cardholder_mismatch", "provisioning_device_mismatch", "same_device_no_prior_authentication", "same_device_successful_prior_authentication", "software_update", "suspicious_activity", "too_many_different_cardholders", "too_many_recent_attempts", "too_many_recent_tokens"]}}, "suggested_decision": {"type": "string", "description": "The recommendation on responding to the tokenization request.", "enum": ["approve", "decline", "require_auth"]}, "suggested_decision_version": {"maxLength": 5000, "type": "string", "description": "The version of the standard for mapping reason codes followed by the wallet provider."}}, "description": "", "x-expandableFields": ["cardholder_address"]}
+```

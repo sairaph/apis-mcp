@@ -1,0 +1,14 @@
+---
+title: abuse-reports_DMCAReport
+page_id: schema-abuse-reports-dmcareport-85858827
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# abuse-reports_DMCAReport
+
+```yaml
+{"type": "object", "allOf": [{"$ref": "#/components/schemas/abuse-reports_BaseReportFields"}, {"properties": {"act": {"enum": ["abuse_dmca"]}, "address1": {"description": "Text not exceeding 100 characters. This field may be released by Cloudflare to third parties such as the Lumen Database (https://lumendatabase.org/).", "type": "string", "maxLength": 100, "minLength": 1}, "agent_name": {"description": "The name of the copyright holder. Text not exceeding 60 characters. This field may be released by Cloudflare to third parties such as the Lumen Database (https://lumendatabase.org/).", "type": "string", "maxLength": 60, "minLength": 1}, "agree": {"description": "Can be `0` for false or `1` for true. Must be value: 1 for DMCA reports", "type": "integer", "enum": [1]}, "city": {"description": "Text not exceeding 255 characters. This field may be released by Cloudflare to third parties such as the Lumen Database (https://lumendatabase.org/).", "type": "string", "maxLength": 255, "minLength": 1}, "country": {"description": "Text not exceeding 255 characters. This field may be released by Cloudflare to third parties such as the Lumen Database (https://lumendatabase.org/).\n", "type": "string", "maxLength": 255, "minLength": 1}, "host_notification": {"description": "Notification type based on the abuse type. NOTE: Copyright (DMCA) and Trademark reports cannot be anonymous.\n", "type": "string", "enum": ["send"]}, "original_work": {"description": "Text not exceeding 255 characters. This field may be released by Cloudflare to third parties such as the Lumen Database (https://lumendatabase.org/).\n", "type": "string", "maxLength": 255, "minLength": 1}, "owner_notification": {"description": "Notification type based on the abuse type. NOTE: Copyright (DMCA) and Trademark reports cannot be anonymous.\n", "type": "string", "enum": ["send"]}, "signature": {"description": "Required for DMCA reports, should be same as Name. An affirmation that all information in the report is true and accurate while agreeing to the policies of Cloudflare's abuse reports", "type": "string"}, "state": {"description": "Text not exceeding 255 characters. This field may be released by Cloudflare to third parties such as the Lumen Database (https://lumendatabase.org/).", "type": "string", "maxLength": 255, "minLength": 1}}, "required": ["address1", "agent_name", "agree", "city", "country", "host_notification", "original_work", "owner_notification", "signature", "state"], "title": "DMCA Report"}]}
+```

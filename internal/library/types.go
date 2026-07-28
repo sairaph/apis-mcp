@@ -17,11 +17,13 @@ var (
 
 // Options identifies the canonical user tree and the published SQLite index.
 // Token budgets apply to retrieved records, not transport rendering overhead.
+// ExcludeBuiltin opens only the user tree, primarily for isolated processing.
 type Options struct {
 	UserRoot        string
 	IndexPath       string
 	ListTokenBudget int
 	ReadTokenBudget int
+	ExcludeBuiltin  bool
 }
 
 type CollectionsRequest struct {

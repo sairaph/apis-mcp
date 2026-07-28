@@ -84,8 +84,12 @@ type sourceFile struct {
 }
 
 func loadCatalog(sources []Source) (*catalog, error) {
-	var documents []documentRecord
-	locations := make(map[string][]string)
+	type sourceDocuments struct {
+		name      string
+		documents []documentRecord
+	}
+	var loaded []sourceDocuments
+	userFamilies := make(map[string]bool)
 	hash := sha256.New()
 
 	for _, source := range sources {
@@ -105,20 +109,33 @@ func loadCatalog(sources []Source) (*catalog, error) {
 		if err != nil {
 			return nil, err
 		}
+		locations := make(map[string][]string)
 		for _, doc := range docs {
+			locations[doc.DocID] = append(locations[doc.DocID], doc.Location)
+			if source.Name != "builtin" {
+				userFamilies[doc.FamilyID] = true
+			}
+		}
+		if err := validateUniqueDocuments(locations); err != nil {
+			return nil, err
+		}
+		loaded = append(loaded, sourceDocuments{name: source.Name, documents: docs})
+	}
+
+	var documents []documentRecord
+	locations := make(map[string][]string)
+	for _, source := range loaded {
+		for _, doc := range source.documents {
+			// A user-defined family replaces its built-in counterpart as one unit.
+			if source.name == "builtin" && userFamilies[doc.FamilyID] {
+				continue
+			}
 			locations[doc.DocID] = append(locations[doc.DocID], doc.Location)
 			documents = append(documents, doc)
 		}
 	}
-
-	for docID, found := range locations {
-		if len(found) > 1 {
-			sort.Strings(found)
-			return nil, &ValidationError{
-				Message:   fmt.Sprintf("duplicate doc_id %q", docID),
-				Locations: found,
-			}
-		}
+	if err := validateUniqueDocuments(locations); err != nil {
+		return nil, err
 	}
 
 	sort.Slice(documents, func(i, j int) bool { return documents[i].DocID < documents[j].DocID })
@@ -131,6 +148,20 @@ func loadCatalog(sources []Source) (*catalog, error) {
 		families:    families,
 		documents:   documents,
 	}, nil
+}
+
+func validateUniqueDocuments(locations map[string][]string) error {
+	for docID, found := range locations {
+		if len(found) < 2 {
+			continue
+		}
+		sort.Strings(found)
+		return &ValidationError{
+			Message:   fmt.Sprintf("duplicate doc_id %q", docID),
+			Locations: found,
+		}
+	}
+	return nil
 }
 
 func markdownFiles(source Source) ([]sourceFile, error) {

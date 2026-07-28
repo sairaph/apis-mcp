@@ -1,0 +1,35 @@
+---
+title: Get event count
+page_id: operation-get-accounts-account-id-workers-observability-usage-a7d6db2f
+path: operations/usage
+description: Event counts broken down by dataset and service, bucketed by day, for up to 90 days. The top-level events field is the sum of all breakdown counts.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - GET
+api_endpoints:
+    - /accounts/{account_id}/workers/observability/usage
+operation_ids:
+    - usage.get
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Get event count
+
+`GET /accounts/{account_id}/workers/observability/usage`
+
+Operation ID: `usage.get`
+
+Event counts broken down by dataset and service, bucketed by day, for up to 90 days. The top-level events field is the sum of all breakdown counts.
+
+## Path Parameters
+
+```yaml
+[{"name": "account_id", "in": "path", "description": "Your Cloudflare account ID.", "required": true, "schema": {"type": "string"}}]
+```
+
+## Definition
+
+```yaml
+{"operationId": "usage.get", "summary": "Get event count", "description": "Event counts broken down by dataset and service, bucketed by day, for up to 90 days. The top-level events field is the sum of all breakdown counts.", "parameters": [{"name": "from", "in": "query", "required": true, "schema": {"description": "Unix timestamp in milliseconds for the start of the range.", "type": "string", "minLength": 1}}, {"name": "to", "in": "query", "required": true, "schema": {"description": "Unix timestamp in milliseconds for the end of the range.", "type": "string", "minLength": 1}}], "responses": {"200": {"description": "Successful request", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"message": {"type": "string"}}, "required": ["message"], "type": "object"}}, "messages": {"type": "array", "items": {"properties": {"message": {"type": "string", "enum": ["Successful request"]}}, "required": ["message"], "type": "object"}}, "result": {"type": "object", "properties": {"breakdown": {"description": "Event counts grouped by dataset and service, bucketed by day.", "type": "array", "items": {"properties": {"bin": {"description": "ISO-8601 timestamp for the start of the bucket.", "type": "string"}, "count": {"description": "ABR-adjusted event count for this bucket.", "type": "number"}, "dataset": {"description": "Dataset name (e.g. 'workers', 'queues').", "type": "string"}, "service": {"description": "Worker or service name that produced the events.", "type": "string"}}, "required": ["bin", "dataset", "service", "count"], "type": "object"}}, "events": {"description": "Total ABR-adjusted event count for the period — sum of all breakdown bins.", "type": "number"}}, "required": ["events", "breakdown"]}, "success": {"type": "boolean", "enum": [true]}}, "required": ["messages", "success", "errors", "result"]}}}}, "400": {"description": "Bad Request", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"detail": {"type": "string"}, "message": {"type": "string", "enum": ["Bad Request"]}}, "required": ["message"], "type": "object"}}, "messages": {"type": "array", "items": {"properties": {"message": {"type": "string"}}, "required": ["message"], "type": "object"}}, "success": {"type": "boolean", "enum": [false]}}, "required": ["errors", "success", "messages"]}}}}, "401": {"description": "Unauthorized", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"detail": {"type": "string"}, "message": {"type": "string", "enum": ["Unauthorized"]}}, "required": ["message"], "type": "object"}}, "messages": {"type": "array", "items": {"properties": {"message": {"type": "string"}}, "required": ["message"], "type": "object"}}, "success": {"type": "boolean", "enum": [false]}}, "required": ["errors", "success", "messages"]}}}}, "429": {"description": "Too many requests", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"detail": {"type": "string"}, "message": {"type": "string", "enum": ["Too many requests"]}}, "required": ["message"], "type": "object"}}, "messages": {"type": "array", "items": {"properties": {"message": {"type": "string"}}, "required": ["message"], "type": "object"}}, "success": {"type": "boolean", "enum": [false]}}, "required": ["errors", "success", "messages"]}}}}, "500": {"description": "Internal error", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"detail": {"type": "string"}, "message": {"type": "string", "enum": ["Internal error"]}}, "required": ["message"], "type": "object"}}, "messages": {"type": "array", "items": {"properties": {"message": {"type": "string"}}, "required": ["message"], "type": "object"}}, "success": {"type": "boolean", "enum": [false]}}, "required": ["errors", "success", "messages"]}}}}}, "tags": ["Usage"], "x-api-token-group": ["Workers Observability Write", "Workers Observability Read"]}
+```

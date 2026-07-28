@@ -1,0 +1,17 @@
+---
+title: customer_session_resource_components_resource_mobile_payment_element_resource_features
+page_id: schema-customer-session-resource-components-resource-mobile-payment-element-res-7d3e6693
+path: schemas
+description: This hash contains the features the mobile payment element supports.
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# customer_session_resource_components_resource_mobile_payment_element_resource_features
+
+This hash contains the features the mobile payment element supports.
+
+```yaml
+{"title": "CustomerSessionResourceComponentsResourceMobilePaymentElementResourceFeatures", "type": "object", "properties": {"payment_method_allow_redisplay_filters": {"type": "array", "description": "A list of [`allow_redisplay`](https://docs.stripe.com/api/payment_methods/object#payment_method_object-allow_redisplay) values that controls which saved payment methods the mobile payment element displays by filtering to only show payment methods with an `allow_redisplay` value that is present in this list.\n\nIf not specified, defaults to [\"always\"]. In order to display all saved payment methods, specify [\"always\", \"limited\", \"unspecified\"].", "nullable": true, "items": {"type": "string", "enum": ["always", "limited", "unspecified"]}}, "payment_method_redisplay": {"type": "string", "description": "Controls whether or not the mobile payment element shows saved payment methods.", "nullable": true, "enum": ["disabled", "enabled"], "x-stripeBypassValidation": true}, "payment_method_remove": {"type": "string", "description": "Controls whether the mobile payment element displays the option to remove a saved payment method.\"\n\nAllowing buyers to remove their saved payment methods impacts subscriptions that depend on that payment method. Removing the payment method detaches the [`customer` object](https://docs.stripe.com/api/payment_methods/object#payment_method_object-customer) from that [PaymentMethod](https://docs.stripe.com/api/payment_methods).", "nullable": true, "enum": ["disabled", "enabled"], "x-stripeBypassValidation": true}, "payment_method_save": {"type": "string", "description": "Controls whether the mobile payment element displays a checkbox offering to save a new payment method.\n\nIf a customer checks the box, the [`allow_redisplay`](https://docs.stripe.com/api/payment_methods/object#payment_method_object-allow_redisplay) value on the PaymentMethod is set to `'always'` at confirmation time. For PaymentIntents, the [`setup_future_usage`](https://docs.stripe.com/api/payment_intents/object#payment_intent_object-setup_future_usage) value is also set to the value defined in `payment_method_save_usage`.", "nullable": true, "enum": ["disabled", "enabled"], "x-stripeBypassValidation": true}, "payment_method_save_allow_redisplay_override": {"type": "string", "description": "Allows overriding the value of allow_override when saving a new payment method when payment_method_save is set to disabled. Use values: \"always\", \"limited\", or \"unspecified\".\n\nIf not specified, defaults to `nil` (no override value).", "nullable": true, "enum": ["always", "limited", "unspecified"]}}, "description": "This hash contains the features the mobile payment element supports.", "x-expandableFields": []}
+```

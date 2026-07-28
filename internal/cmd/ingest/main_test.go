@@ -68,7 +68,7 @@ func TestWorkerIngestsAndIndexesOpenAPI(t *testing.T) {
 	if len(generations) != 1 {
 		t.Fatalf("SQLite generations: %v", generations)
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: store.output, IndexPath: filepath.Join(store.output, "library.sqlite")})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: store.output, IndexPath: filepath.Join(store.output, "library.sqlite"), ExcludeBuiltin: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestWorkerDiscoversScalarShellAndPublishes129IndexedPages(t *testing.T) {
 	if err != nil || len(generations) != 1 {
 		t.Fatalf("SQLite generations: %v, %v", generations, err)
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: store.output, IndexPath: filepath.Join(store.output, "library.sqlite")})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: store.output, IndexPath: filepath.Join(store.output, "library.sqlite"), ExcludeBuiltin: true})
 	if err != nil {
 		t.Fatal(err)
 	}

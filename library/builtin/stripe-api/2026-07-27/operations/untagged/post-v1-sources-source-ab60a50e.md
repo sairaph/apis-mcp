@@ -1,0 +1,34 @@
+---
+title: Update a source
+page_id: operation-post-v1-sources-source-587558f8
+path: operations/untagged
+description: |-
+    <p>Updates the specified source by setting the values of the parameters passed. Any parameters not provided will be left unchanged.</p>
+
+    <p>This request accepts the <code>metadata</code> and <code>owner</code> as arguments. It is also possible to update type specific information for selected payment methods. Please refer to our <a href="/docs/sources">payment method guides</a> for more detail.</p>
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+http_methods:
+    - POST
+api_endpoints:
+    - /v1/sources/{source}
+operation_ids:
+    - PostSourcesSource
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# Update a source
+
+`POST /v1/sources/{source}`
+
+Operation ID: `PostSourcesSource`
+
+<p>Updates the specified source by setting the values of the parameters passed. Any parameters not provided will be left unchanged.</p>
+
+<p>This request accepts the <code>metadata</code> and <code>owner</code> as arguments. It is also possible to update type specific information for selected payment methods. Please refer to our <a href="/docs/sources">payment method guides</a> for more detail.</p>
+
+## Definition
+
+```yaml
+{"summary": "Update a source", "description": "<p>Updates the specified source by setting the values of the parameters passed. Any parameters not provided will be left unchanged.</p>\n\n<p>This request accepts the <code>metadata</code> and <code>owner</code> as arguments. It is also possible to update type specific information for selected payment methods. Please refer to our <a href=\"/docs/sources\">payment method guides</a> for more detail.</p>", "operationId": "PostSourcesSource", "parameters": [{"name": "source", "in": "path", "required": true, "style": "simple", "explode": false, "schema": {"maxLength": 5000, "type": "string"}}], "requestBody": {"content": {"application/x-www-form-urlencoded": {"schema": {"type": "object", "properties": {"amount": {"type": "integer", "description": "Amount associated with the source."}, "expand": {"type": "array", "description": "Specifies which fields in the response should be expanded.", "items": {"maxLength": 5000, "type": "string"}}, "mandate": {"title": "mandate_params", "type": "object", "properties": {"acceptance": {"title": "mandate_acceptance_params", "required": ["status"], "type": "object", "properties": {"date": {"type": "integer", "format": "unix-time"}, "ip": {"type": "string"}, "offline": {"title": "mandate_offline_acceptance_params", "required": ["contact_email"], "type": "object", "properties": {"contact_email": {"type": "string"}}}, "online": {"title": "mandate_online_acceptance_params", "type": "object", "properties": {"date": {"type": "integer", "format": "unix-time"}, "ip": {"type": "string"}, "user_agent": {"maxLength": 5000, "type": "string"}}}, "status": {"maxLength": 5000, "type": "string", "enum": ["accepted", "pending", "refused", "revoked"]}, "type": {"maxLength": 5000, "type": "string", "enum": ["offline", "online"]}, "user_agent": {"maxLength": 5000, "type": "string"}}}, "amount": {"anyOf": [{"type": "integer"}, {"type": "string", "enum": [""]}]}, "currency": {"type": "string", "format": "currency"}, "interval": {"maxLength": 5000, "type": "string", "enum": ["one_time", "scheduled", "variable"]}, "notification_method": {"maxLength": 5000, "type": "string", "enum": ["deprecated_none", "email", "manual", "none", "stripe_email"]}}, "description": "Information about a mandate possibility attached to a source object (generally for bank debits) as well as its acceptance status."}, "metadata": {"description": "Set of [key-value pairs](https://docs.stripe.com/api/metadata) that you can attach to an object. This can be useful for storing additional information about the object in a structured format. Individual keys can be unset by posting an empty value to them. All keys can be unset by posting an empty value to `metadata`.", "anyOf": [{"type": "object", "additionalProperties": {"type": "string"}}, {"type": "string", "enum": [""]}]}, "owner": {"title": "owner", "type": "object", "properties": {"address": {"title": "source_address", "type": "object", "properties": {"city": {"maxLength": 5000, "type": "string"}, "country": {"maxLength": 5000, "type": "string"}, "line1": {"maxLength": 5000, "type": "string"}, "line2": {"maxLength": 5000, "type": "string"}, "postal_code": {"maxLength": 5000, "type": "string"}, "state": {"maxLength": 5000, "type": "string"}}}, "email": {"type": "string"}, "name": {"maxLength": 5000, "type": "string"}, "phone": {"maxLength": 5000, "type": "string"}}, "description": "Information about the owner of the payment instrument that may be used or required by particular source types."}, "source_order": {"title": "order_params", "type": "object", "properties": {"items": {"type": "array", "items": {"title": "order_item_specs", "type": "object", "properties": {"amount": {"type": "integer"}, "currency": {"type": "string", "format": "currency"}, "description": {"maxLength": 1000, "type": "string"}, "parent": {"maxLength": 5000, "type": "string"}, "quantity": {"type": "integer"}, "type": {"maxLength": 5000, "type": "string", "enum": ["discount", "shipping", "sku", "tax"]}}}}, "shipping": {"title": "order_shipping", "required": ["address"], "type": "object", "properties": {"address": {"title": "address", "required": ["line1"], "type": "object", "properties": {"city": {"maxLength": 5000, "type": "string"}, "country": {"maxLength": 5000, "type": "string"}, "line1": {"maxLength": 5000, "type": "string"}, "line2": {"maxLength": 5000, "type": "string"}, "postal_code": {"maxLength": 5000, "type": "string"}, "state": {"maxLength": 5000, "type": "string"}}}, "carrier": {"maxLength": 5000, "type": "string"}, "name": {"maxLength": 5000, "type": "string"}, "phone": {"maxLength": 5000, "type": "string"}, "tracking_number": {"maxLength": 5000, "type": "string"}}}}, "description": "Information about the items and shipping associated with the source. Required for transactional credit (for example Klarna) sources before you can charge it."}}, "additionalProperties": false}, "encoding": {"expand": {"style": "deepObject", "explode": true}, "mandate": {"style": "deepObject", "explode": true}, "metadata": {"style": "deepObject", "explode": true}, "owner": {"style": "deepObject", "explode": true}, "source_order": {"style": "deepObject", "explode": true}}}}, "required": false}, "responses": {"200": {"description": "Successful response.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/source"}}}}, "default": {"description": "Error response.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/error"}}}}}}
+```

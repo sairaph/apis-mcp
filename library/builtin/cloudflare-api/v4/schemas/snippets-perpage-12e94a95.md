@@ -1,0 +1,17 @@
+---
+title: snippets_PerPage
+page_id: schema-snippets-perpage-12e94a95
+path: schemas
+description: Specifies how many results to return per page.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# snippets_PerPage
+
+Specifies how many results to return per page.
+
+```yaml
+{"description": "Specifies how many results to return per page.", "type": "integer", "example": 25, "default": 25, "minimum": 1, "title": "Per Page", "x-auditable": true}
+```

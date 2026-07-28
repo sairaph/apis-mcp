@@ -1,0 +1,14 @@
+---
+title: magic-visibility-mnm_mnm_rule_ip_prefixes
+page_id: schema-magic-visibility-mnm-mnm-rule-ip-prefixes-93e444ac
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# magic-visibility-mnm_mnm_rule_ip_prefixes
+
+```yaml
+{"type": "array", "items": {"$ref": "#/components/schemas/magic-visibility-mnm_mnm_rule_ip_prefix"}}
+```

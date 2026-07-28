@@ -14,6 +14,46 @@ import (
 	"github.com/sairaph/apis-mcp/library"
 )
 
+func TestBuiltinAPICatalog(t *testing.T) {
+	snapshot, err := library.Open(context.Background(), library.Options{
+		UserRoot: t.TempDir(), IndexPath: filepath.Join(t.TempDir(), "index.sqlite"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+
+	listed, err := snapshot.List(context.Background(), library.ListRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]struct {
+		version    string
+		collection string
+		pages      int
+	}{
+		"Cloudflare API":    {"v4", "cloud_platform", 9_762},
+		"OpenRouter":        {"2026-07-27", "ai_platforms", 803},
+		"Stripe API":        {"2026-07-27", "payments", 2_207},
+		"Tailscale":         {"2026-07-27", "networking", 129},
+		"Tavily Search API": {"2026-07-27", "search", 13},
+		"Z.ai":              {"2026-07-27", "ai_platforms", 73},
+	}
+	for _, api := range listed.APIs {
+		expected, ok := want[api.Name]
+		if !ok {
+			continue
+		}
+		if len(api.Versions) != 1 || api.Versions[0].Version != expected.version || api.Versions[0].Pages != expected.pages || len(api.Collections) != 1 || api.Collections[0] != expected.collection {
+			t.Fatalf("unexpected built-in catalog entry: %+v", api)
+		}
+		delete(want, api.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing built-in APIs: %+v", want)
+	}
+}
+
 func TestManifestCatalogAndFilters(t *testing.T) {
 	root, index := fixture(t)
 	snapshot := open(t, root, index, 2_000, 4_000)
@@ -54,7 +94,7 @@ func TestManifestValidationAndFamilyAgreement(t *testing.T) {
 		root := t.TempDir()
 		write(t, root, "broken/_index.md", "---\nname: Broken\n---\n")
 		_, err := library.Open(context.Background(), library.Options{
-			UserRoot: root, IndexPath: filepath.Join(t.TempDir(), "index.sqlite"),
+			UserRoot: root, IndexPath: filepath.Join(t.TempDir(), "index.sqlite"), ExcludeBuiltin: true,
 		})
 		if err == nil || !strings.Contains(err.Error(), "requires name and version") {
 			t.Fatalf("expected required manifest field error, got %v", err)
@@ -66,7 +106,7 @@ func TestManifestValidationAndFamilyAgreement(t *testing.T) {
 		writeManifest(t, root, "one", "Same API", "v1", "first")
 		writeManifest(t, root, "two", "Same API", "v2", "different")
 		_, err := library.Open(context.Background(), library.Options{
-			UserRoot: root, IndexPath: filepath.Join(t.TempDir(), "index.sqlite"),
+			UserRoot: root, IndexPath: filepath.Join(t.TempDir(), "index.sqlite"), ExcludeBuiltin: true,
 		})
 		if err == nil || !strings.Contains(err.Error(), "disagree on family metadata") {
 			t.Fatalf("expected family consistency error, got %v", err)
@@ -74,23 +114,23 @@ func TestManifestValidationAndFamilyAgreement(t *testing.T) {
 	})
 }
 
-func TestDuplicateDocIDReportsBothSources(t *testing.T) {
+func TestUserLibraryOverridesBuiltinFamily(t *testing.T) {
 	root := t.TempDir()
-	writeManifest(t, root, "duplicate", "Example API", "v1", "user copy")
-	_, err := library.Open(context.Background(), library.Options{
+	writeManifest(t, root, "example/v2", "Example API", "v2", "user copy")
+	writePage(t, root, "example/v2/custom.md", "User copy", "", "# User copy\n")
+	snapshot, err := library.Open(context.Background(), library.Options{
 		UserRoot: root, IndexPath: filepath.Join(t.TempDir(), "index.sqlite"),
 	})
-	if err == nil {
-		t.Fatal("expected duplicate doc_id rejection")
+	if err != nil {
+		t.Fatal(err)
 	}
-	var validation *library.ValidationError
-	if !errors.As(err, &validation) {
-		t.Fatalf("expected ValidationError, got %T: %v", err, err)
+	defer snapshot.Close()
+	listed, err := snapshot.List(context.Background(), library.ListRequest{Name: "Example API"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(validation.Locations) != 2 ||
-		!containsSubstring(validation.Locations, "builtin:builtin/example/v1/_index.md") ||
-		!containsSubstring(validation.Locations, filepath.Join(root, "duplicate", "_index.md")) {
-		t.Fatalf("duplicate locations missing: %+v", validation.Locations)
+	if listed.Total != 1 || len(listed.APIs) != 1 || len(listed.APIs[0].Versions) != 1 || listed.APIs[0].Versions[0].Version != "v2" {
+		t.Fatalf("user family did not override built-in family: %+v", listed)
 	}
 }
 
@@ -128,7 +168,7 @@ func TestPageIDsAndNavigation(t *testing.T) {
 	}
 
 	writePage(t, root, "widget/v1/guide/unrelated.md", "Unrelated", "", "# Unrelated\n")
-	if err := library.Rebuild(context.Background(), library.Options{UserRoot: root, IndexPath: index}); err != nil {
+	if err := library.Rebuild(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true}); err != nil {
 		t.Fatal(err)
 	}
 	newSnapshot := open(t, root, index, 2_000, 4_000)
@@ -152,7 +192,7 @@ func TestDuplicateExplicitPageIDIsRejected(t *testing.T) {
 	writePage(t, root, "api/v1/one.md", "One", "page_id: same", "# One\n")
 	writePage(t, root, "api/v1/two.md", "Two", "page_id: same", "# Two\n")
 	_, err := library.Open(context.Background(), library.Options{
-		UserRoot: root, IndexPath: filepath.Join(t.TempDir(), "index.sqlite"),
+		UserRoot: root, IndexPath: filepath.Join(t.TempDir(), "index.sqlite"), ExcludeBuiltin: true,
 	})
 	var validation *library.ValidationError
 	if !errors.As(err, &validation) || len(validation.Locations) != 2 ||
@@ -291,7 +331,7 @@ func TestFailedRebuildPreservesPublishedIndexAndOpenSnapshot(t *testing.T) {
 description: Create one widget.
 api_endpoints: [/v1/widgets]
 operation_ids: [createWidget]`, "# Changed\n\nChanged body.\n")
-	if err := library.Rebuild(context.Background(), library.Options{UserRoot: root, IndexPath: index}); err != nil {
+	if err := library.Rebuild(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true}); err != nil {
 		t.Fatal(err)
 	}
 	current := open(t, root, index, 2_000, 4_000)
@@ -323,8 +363,8 @@ operation_ids: [createWidget]`, "# Changed\n\nChanged body.\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeManifest(t, root, "duplicate", "Example API", "v1", "duplicate")
-	if err := library.Rebuild(context.Background(), library.Options{UserRoot: root, IndexPath: index}); err == nil {
+	writeManifest(t, root, "duplicate", "Widget API", "v1", "duplicate")
+	if err := library.Rebuild(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true}); err == nil {
 		t.Fatal("invalid rebuild unexpectedly succeeded")
 	}
 	after, err := os.ReadFile(currentGeneration)
@@ -344,7 +384,7 @@ operation_ids: [createWidget]`, "# Changed\n\nChanged body.\n")
 	if err := os.RemoveAll(filepath.Join(root, "duplicate")); err != nil {
 		t.Fatal(err)
 	}
-	if err := library.Rebuild(context.Background(), library.Options{UserRoot: root, IndexPath: index}); err != nil {
+	if err := library.Rebuild(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(oldGeneration); !os.IsNotExist(err) {
@@ -416,7 +456,7 @@ func write(t *testing.T, root, relative, content string) {
 func open(t *testing.T, root, index string, listBudget, readBudget int) *library.Snapshot {
 	t.Helper()
 	snapshot, err := library.Open(context.Background(), library.Options{
-		UserRoot: root, IndexPath: index, ListTokenBudget: listBudget, ReadTokenBudget: readBudget,
+		UserRoot: root, IndexPath: index, ListTokenBudget: listBudget, ReadTokenBudget: readBudget, ExcludeBuiltin: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -443,15 +483,6 @@ func findCollection(t *testing.T, values []library.Collection, id string) librar
 	}
 	t.Fatalf("collection %q not found in %+v", id, values)
 	return library.Collection{}
-}
-
-func containsSubstring(values []string, wanted string) bool {
-	for _, value := range values {
-		if strings.Contains(value, wanted) {
-			return true
-		}
-	}
-	return false
 }
 
 func contains(values []string, wanted string) bool {

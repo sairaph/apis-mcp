@@ -1,0 +1,29 @@
+---
+title: Update a product
+page_id: operation-post-v1-products-id-f2b9a1ca
+path: operations/untagged
+description: <p>Updates the specific product by setting the values of the parameters passed. Any parameters not provided will be left unchanged.</p>
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+http_methods:
+    - POST
+api_endpoints:
+    - /v1/products/{id}
+operation_ids:
+    - PostProductsId
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# Update a product
+
+`POST /v1/products/{id}`
+
+Operation ID: `PostProductsId`
+
+<p>Updates the specific product by setting the values of the parameters passed. Any parameters not provided will be left unchanged.</p>
+
+## Definition
+
+```yaml
+{"summary": "Update a product", "description": "<p>Updates the specific product by setting the values of the parameters passed. Any parameters not provided will be left unchanged.</p>", "operationId": "PostProductsId", "parameters": [{"name": "id", "in": "path", "required": true, "style": "simple", "explode": false, "schema": {"maxLength": 5000, "type": "string"}}], "requestBody": {"content": {"application/x-www-form-urlencoded": {"schema": {"type": "object", "properties": {"active": {"type": "boolean", "description": "Whether the product is available for purchase."}, "default_price": {"maxLength": 5000, "type": "string", "description": "The ID of the [Price](https://docs.stripe.com/api/prices) object that is the default price for this product."}, "description": {"description": "The product's description, meant to be displayable to the customer. Use this field to optionally store a long form explanation of the product being sold for your own rendering purposes.", "anyOf": [{"maxLength": 40000, "type": "string"}, {"type": "string", "enum": [""]}]}, "expand": {"type": "array", "description": "Specifies which fields in the response should be expanded.", "items": {"maxLength": 5000, "type": "string"}}, "images": {"description": "A list of up to 8 URLs of images for this product, meant to be displayable to the customer.", "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string", "enum": [""]}]}, "marketing_features": {"description": "A list of up to 15 marketing features for this product. These are displayed in [pricing tables](https://docs.stripe.com/payments/checkout/pricing-table).", "anyOf": [{"type": "array", "items": {"title": "features", "required": ["name"], "type": "object", "properties": {"name": {"maxLength": 5000, "type": "string"}}}}, {"type": "string", "enum": [""]}]}, "metadata": {"description": "Set of [key-value pairs](https://docs.stripe.com/api/metadata) that you can attach to an object. This can be useful for storing additional information about the object in a structured format. Individual keys can be unset by posting an empty value to them. All keys can be unset by posting an empty value to `metadata`.", "anyOf": [{"type": "object", "additionalProperties": {"type": "string"}}, {"type": "string", "enum": [""]}]}, "name": {"maxLength": 5000, "type": "string", "description": "The product's name, meant to be displayable to the customer."}, "package_dimensions": {"description": "The dimensions of this product for shipping purposes.", "anyOf": [{"title": "package_dimensions_specs", "required": ["height", "length", "weight", "width"], "type": "object", "properties": {"height": {"type": "number"}, "length": {"type": "number"}, "weight": {"type": "number"}, "width": {"type": "number"}}}, {"type": "string", "enum": [""]}]}, "shippable": {"type": "boolean", "description": "Whether this product is shipped (i.e., physical goods)."}, "statement_descriptor": {"maxLength": 22, "type": "string", "description": "An arbitrary string to be displayed on your customer's credit card or bank statement. While most banks display this information consistently, some may display it incorrectly or not at all.\n\nThis may be up to 22 characters. The statement description may not include `<`, `>`, `\\`, `\"`, `'` characters, and will appear on your customer's statement in capital letters. Non-ASCII characters are automatically stripped.\n It must contain at least one letter. May only be set if `type=service`. Only used for subscription payments."}, "tax_code": {"description": "A [tax code](https://docs.stripe.com/tax/tax-categories) ID.", "anyOf": [{"type": "string"}, {"type": "string", "enum": [""]}]}, "unit_label": {"description": "A label that represents units of this product. When set, this will be included in customers' receipts, invoices, Checkout, and the customer portal. May only be set if `type=service`.", "anyOf": [{"maxLength": 12, "type": "string"}, {"type": "string", "enum": [""]}]}, "url": {"description": "A URL of a publicly-accessible webpage for this product.", "anyOf": [{"type": "string"}, {"type": "string", "enum": [""]}]}}, "additionalProperties": false}, "encoding": {"description": {"style": "deepObject", "explode": true}, "expand": {"style": "deepObject", "explode": true}, "images": {"style": "deepObject", "explode": true}, "marketing_features": {"style": "deepObject", "explode": true}, "metadata": {"style": "deepObject", "explode": true}, "package_dimensions": {"style": "deepObject", "explode": true}, "tax_code": {"style": "deepObject", "explode": true}, "unit_label": {"style": "deepObject", "explode": true}, "url": {"style": "deepObject", "explode": true}}}}, "required": false}, "responses": {"200": {"description": "Successful response.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/product"}}}}, "default": {"description": "Error response.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/error"}}}}}}
+```

@@ -1,0 +1,17 @@
+---
+title: resource-tagging_set_tags_request_account_level
+page_id: schema-resource-tagging-set-tags-request-account-level-2d677fbe
+path: schemas
+description: Request body schema for setting tags on account-level resources.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# resource-tagging_set_tags_request_account_level
+
+Request body schema for setting tags on account-level resources.
+
+```yaml
+{"description": "Request body schema for setting tags on account-level resources.", "discriminator": {"mapping": {"access_application": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "access_group": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "account": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "account_ruleset": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "ai_gateway": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "alerting_policy": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "alerting_webhook": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "cloudflared_tunnel": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "d1_database": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "durable_object_namespace": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "gateway_list": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "gateway_rule": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "image": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "infrastructure_target": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "kv_namespace": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "load_balancer_monitor": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "load_balancer_pool": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "pages_project": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "queue": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "r2_bucket": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "resource_share": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "stream_live_input": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "stream_video": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "vectorize_index": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "worker": "#/components/schemas/resource-tagging_set_tags_request_account_level_base", "worker_version": "#/components/schemas/resource-tagging_set_tags_request_account_level_worker_version"}, "propertyName": "resource_type"}, "oneOf": [{"$ref": "#/components/schemas/resource-tagging_set_tags_request_account_level_worker_version"}, {"$ref": "#/components/schemas/resource-tagging_set_tags_request_account_level_base"}]}
+```

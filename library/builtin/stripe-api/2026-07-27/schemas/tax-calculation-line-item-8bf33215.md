@@ -1,0 +1,14 @@
+---
+title: tax.calculation_line_item
+page_id: schema-tax-calculation-line-item-8bf33215
+path: schemas
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# tax.calculation_line_item
+
+```yaml
+{"title": "TaxProductResourceTaxCalculationLineItem", "required": ["amount", "amount_tax", "id", "livemode", "object", "quantity", "reference", "tax_behavior", "tax_code"], "type": "object", "properties": {"amount": {"type": "integer", "description": "The line item amount in the [smallest currency unit](https://docs.stripe.com/currencies#minor-units). If `tax_behavior=inclusive`, then this amount includes taxes. Otherwise, taxes were calculated on top of this amount."}, "amount_tax": {"type": "integer", "description": "The amount of tax calculated for this line item, in the [smallest currency unit](https://docs.stripe.com/currencies#minor-units)."}, "id": {"maxLength": 5000, "type": "string", "description": "Unique identifier for the object."}, "livemode": {"type": "boolean", "description": "If the object exists in live mode, the value is `true`. If the object exists in test mode, the value is `false`."}, "metadata": {"type": "object", "additionalProperties": {"maxLength": 500, "type": "string"}, "description": "Set of [key-value pairs](https://docs.stripe.com/api/metadata) that you can attach to an object. This can be useful for storing additional information about the object in a structured format.", "nullable": true}, "object": {"type": "string", "description": "String representing the object's type. Objects of the same type share the same value.", "enum": ["tax.calculation_line_item"]}, "product": {"maxLength": 5000, "type": "string", "description": "The ID of an existing [Product](https://docs.stripe.com/api/products/object).", "nullable": true}, "quantity": {"type": "integer", "description": "The number of units of the item being purchased. For reversals, this is the quantity reversed."}, "reference": {"maxLength": 5000, "type": "string", "description": "A custom identifier for this line item."}, "tax_behavior": {"type": "string", "description": "Specifies whether the `amount` includes taxes. If `tax_behavior=inclusive`, then the amount includes taxes.", "enum": ["exclusive", "inclusive"]}, "tax_breakdown": {"type": "array", "description": "Detailed account of taxes relevant to this line item.", "nullable": true, "items": {"$ref": "#/components/schemas/tax_product_resource_line_item_tax_breakdown"}}, "tax_code": {"maxLength": 5000, "type": "string", "description": "The [tax code](https://docs.stripe.com/tax/tax-categories) ID used for this resource."}}, "description": "", "x-expandableFields": ["tax_breakdown"], "x-resourceId": "tax.calculation_line_item"}
+```

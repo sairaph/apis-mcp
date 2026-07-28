@@ -1,0 +1,29 @@
+---
+title: Create a portal session
+page_id: operation-post-v1-billing-portal-sessions-3b4e634f
+path: operations/untagged
+description: <p>Creates a session of the customer portal.</p>
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+http_methods:
+    - POST
+api_endpoints:
+    - /v1/billing_portal/sessions
+operation_ids:
+    - PostBillingPortalSessions
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# Create a portal session
+
+`POST /v1/billing_portal/sessions`
+
+Operation ID: `PostBillingPortalSessions`
+
+<p>Creates a session of the customer portal.</p>
+
+## Definition
+
+```yaml
+{"summary": "Create a portal session", "description": "<p>Creates a session of the customer portal.</p>", "operationId": "PostBillingPortalSessions", "requestBody": {"content": {"application/x-www-form-urlencoded": {"schema": {"type": "object", "properties": {"configuration": {"maxLength": 5000, "type": "string", "description": "The ID of an existing [configuration](https://docs.stripe.com/api/customer_portal/configurations) to use for this session, describing its functionality and features. If not specified, the session uses the default configuration."}, "customer": {"maxLength": 5000, "type": "string", "description": "The ID of an existing customer."}, "customer_account": {"maxLength": 5000, "type": "string", "description": "The ID of an existing account."}, "expand": {"type": "array", "description": "Specifies which fields in the response should be expanded.", "items": {"maxLength": 5000, "type": "string"}}, "flow_data": {"title": "flow_data_param", "required": ["type"], "type": "object", "properties": {"after_completion": {"title": "flow_data_after_completion_param", "required": ["type"], "type": "object", "properties": {"hosted_confirmation": {"title": "after_completion_hosted_confirmation_param", "type": "object", "properties": {"custom_message": {"maxLength": 500, "type": "string"}}}, "redirect": {"title": "after_completion_redirect_param", "required": ["return_url"], "type": "object", "properties": {"return_url": {"type": "string"}}}, "type": {"type": "string", "enum": ["hosted_confirmation", "portal_homepage", "redirect"]}}}, "subscription_cancel": {"title": "flow_data_subscription_cancel_param", "required": ["subscription"], "type": "object", "properties": {"retention": {"title": "retention_param", "required": ["coupon_offer", "type"], "type": "object", "properties": {"coupon_offer": {"title": "coupon_offer_param", "required": ["coupon"], "type": "object", "properties": {"coupon": {"maxLength": 5000, "type": "string"}}}, "type": {"type": "string", "enum": ["coupon_offer"]}}}, "subscription": {"maxLength": 5000, "type": "string"}}}, "subscription_update": {"title": "flow_data_subscription_update_param", "required": ["subscription"], "type": "object", "properties": {"subscription": {"maxLength": 5000, "type": "string"}}}, "subscription_update_confirm": {"title": "flow_data_subscription_update_confirm_param", "required": ["items", "subscription"], "type": "object", "properties": {"discounts": {"type": "array", "items": {"title": "subscription_update_confirm_discount_params", "type": "object", "properties": {"coupon": {"maxLength": 5000, "type": "string"}, "promotion_code": {"maxLength": 5000, "type": "string"}}}}, "items": {"type": "array", "items": {"title": "subscription_update_confirm_item_params", "required": ["id"], "type": "object", "properties": {"id": {"maxLength": 5000, "type": "string"}, "price": {"maxLength": 5000, "type": "string"}, "quantity": {"type": "integer"}}}}, "subscription": {"maxLength": 5000, "type": "string"}}}, "type": {"type": "string", "enum": ["payment_method_update", "subscription_cancel", "subscription_update", "subscription_update_confirm"]}}, "description": "Information about a specific flow for the customer to go through. See the [docs](https://docs.stripe.com/customer-management/portal-deep-links) to learn more about using customer portal deep links and flows."}, "locale": {"type": "string", "description": "The IETF language tag of the locale customer portal is displayed in. If blank or auto, the customer’s `preferred_locales` or browser’s locale is used.", "enum": ["auto", "bg", "cs", "da", "de", "el", "en", "en-AU", "en-CA", "en-GB", "en-IE", "en-IN", "en-NZ", "en-SG", "es", "es-419", "et", "fi", "fil", "fr", "fr-CA", "hr", "hu", "id", "it", "ja", "ko", "lt", "lv", "ms", "mt", "nb", "nl", "pl", "pt", "pt-BR", "ro", "ru", "sk", "sl", "sv", "th", "tr", "vi", "zh", "zh-HK", "zh-TW"]}, "on_behalf_of": {"type": "string", "description": "The `on_behalf_of` account to use for this session. When specified, only subscriptions and invoices with this `on_behalf_of` account appear in the portal. For more information, see the [docs](https://docs.stripe.com/connect/separate-charges-and-transfers#settlement-merchant). Use the [Accounts API](https://docs.stripe.com/api/accounts/object#account_object-settings-branding) to modify the `on_behalf_of` account's branding settings, which the portal displays."}, "return_url": {"type": "string", "description": "The default URL to redirect customers to when they click on the portal's link to return to your website."}}, "additionalProperties": false}, "encoding": {"expand": {"style": "deepObject", "explode": true}, "flow_data": {"style": "deepObject", "explode": true}}}}, "required": false}, "responses": {"200": {"description": "Successful response.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/billing_portal.session"}}}}, "default": {"description": "Error response.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/error"}}}}}}
+```

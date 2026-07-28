@@ -1,0 +1,29 @@
+---
+title: Search for locations, ASes, reports, and more
+page_id: operation-get-radar-search-global-735859fb
+path: operations/radar-search
+description: 'Searches for locations, autonomous systems, reports, bots, certificate logs, certificate authorities, industries and verticals. Location names can be localized by sending an `Accept-Language` HTTP header with a BCP 47 language tag (e.g., `Accept-Language: pt-PT`). The full quality-value chain is supported (e.g., `pt-PT,pt;q=0.9,en;q=0.8`).'
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - GET
+api_endpoints:
+    - /radar/search/global
+operation_ids:
+    - radar-get-search-global
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Search for locations, ASes, reports, and more
+
+`GET /radar/search/global`
+
+Operation ID: `radar-get-search-global`
+
+Searches for locations, autonomous systems, reports, bots, certificate logs, certificate authorities, industries and verticals. Location names can be localized by sending an `Accept-Language` HTTP header with a BCP 47 language tag (e.g., `Accept-Language: pt-PT`). The full quality-value chain is supported (e.g., `pt-PT,pt;q=0.9,en;q=0.8`).
+
+## Definition
+
+```yaml
+{"operationId": "radar-get-search-global", "summary": "Search for locations, ASes, reports, and more", "description": "Searches for locations, autonomous systems, reports, bots, certificate logs, certificate authorities, industries and verticals. Location names can be localized by sending an `Accept-Language` HTTP header with a BCP 47 language tag (e.g., `Accept-Language: pt-PT`). The full quality-value chain is supported (e.g., `pt-PT,pt;q=0.9,en;q=0.8`).", "parameters": [{"name": "limit", "in": "query", "description": "Limits the number of objects returned in the response.", "schema": {"description": "Limits the number of objects returned in the response.", "type": "integer", "example": 5, "default": 5, "exclusiveMinimum": true, "minimum": 0}}, {"name": "limitPerGroup", "in": "query", "description": "Limits the number of objects per search category.", "schema": {"description": "Limits the number of objects per search category.", "type": "number"}}, {"name": "query", "in": "query", "description": "String used to perform the search operation.", "required": true, "schema": {"description": "String used to perform the search operation.", "type": "string", "example": "United"}}, {"name": "include", "in": "query", "description": "Search types included in results.", "schema": {"description": "Search types included in results.", "type": "array", "items": {"enum": ["ADM1S", "ASNS", "BOTS", "CERTIFICATE_AUTHORITIES", "CERTIFICATE_LOGS", "ORIGINS", "ORIGIN_REGIONS", "INDUSTRIES", "LOCATIONS", "NOTEBOOKS", "TLDS", "VERTICALS"], "type": "string"}}}, {"name": "exclude", "in": "query", "description": "Search types excluded from results.", "schema": {"description": "Search types excluded from results.", "type": "array", "items": {"enum": ["ADM1S", "ASNS", "BOTS", "CERTIFICATE_AUTHORITIES", "CERTIFICATE_LOGS", "ORIGINS", "ORIGIN_REGIONS", "INDUSTRIES", "LOCATIONS", "NOTEBOOKS", "TLDS", "VERTICALS"], "type": "string"}}}, {"name": "format", "in": "query", "description": "Format in which results will be returned.", "schema": {"description": "Format in which results will be returned.", "type": "string", "example": "json", "enum": ["JSON", "CSV"]}}], "responses": {"200": {"description": "Successful response.", "content": {"application/json": {"schema": {"type": "object", "properties": {"result": {"type": "object", "properties": {"search": {"type": "array", "items": {"properties": {"code": {"type": "string", "example": "13335"}, "name": {"type": "string", "example": "Cloudflare"}, "type": {"type": "string", "example": "asn"}}, "required": ["code", "name", "type"], "type": "object"}}}, "required": ["search"]}, "success": {"type": "boolean", "example": true}}, "required": ["result", "success"]}}}}, "400": {"description": "Bad request.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"message": {"type": "string"}}, "required": ["message"], "type": "object"}}, "result": {"type": "object"}, "success": {"type": "boolean", "example": false}}, "required": ["result", "success", "errors"]}}}}}, "security": [{"api_email": [], "api_key": [], "api_token": []}], "tags": ["Radar Search"], "x-api-token-group": ["User Details Write", "User Details Read"], "x-cfPlanAvailability": {"business": true, "enterprise": true, "free": true, "pro": true}, "x-fern-availability": "generally-available", "x-fern-sdk-group-name": "radar.search", "x-fern-sdk-method-name": "global", "x-forge-hidden": true}
+```

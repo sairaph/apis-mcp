@@ -1,0 +1,38 @@
+---
+title: identity.verification_session
+page_id: schema-identity-verification-session-c27408cb
+path: schemas
+description: |-
+    A VerificationSession guides you through the process of collecting and verifying the identities
+    of your users. It contains details about the type of verification, such as what [verification
+    check](/docs/identity/verification-checks) to perform. Only create one VerificationSession for
+    each verification in your system.
+
+    A VerificationSession transitions through [multiple
+    statuses](/docs/identity/how-sessions-work) throughout its lifetime as it progresses through
+    the verification flow. The VerificationSession contains the user's verified data after
+    verification checks are complete.
+
+    Related guide: [The Verification Sessions API](https://docs.stripe.com/identity/verification-sessions)
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# identity.verification_session
+
+A VerificationSession guides you through the process of collecting and verifying the identities
+of your users. It contains details about the type of verification, such as what [verification
+check](/docs/identity/verification-checks) to perform. Only create one VerificationSession for
+each verification in your system.
+
+A VerificationSession transitions through [multiple
+statuses](/docs/identity/how-sessions-work) throughout its lifetime as it progresses through
+the verification flow. The VerificationSession contains the user's verified data after
+verification checks are complete.
+
+Related guide: [The Verification Sessions API](https://docs.stripe.com/identity/verification-sessions)
+
+```yaml
+{"title": "GelatoVerificationSession", "required": ["created", "id", "livemode", "metadata", "object", "status", "type"], "type": "object", "properties": {"client_reference_id": {"maxLength": 5000, "type": "string", "description": "A string to reference this user. This can be a customer ID, a session ID, or similar, and can be used to reconcile this verification with your internal systems.", "nullable": true}, "client_secret": {"maxLength": 5000, "type": "string", "description": "The short-lived client secret used by Stripe.js to [show a verification modal](https://docs.stripe.com/js/identity/modal) inside your app. This client secret expires after 24 hours and can only be used once. Don’t store it, log it, embed it in a URL, or expose it to anyone other than the user. Make sure that you have TLS enabled on any page that includes the client secret. Refer to our docs on [passing the client secret to the frontend](https://docs.stripe.com/identity/verification-sessions#client-secret) to learn more.", "nullable": true}, "created": {"type": "integer", "description": "Time at which the object was created. Measured in seconds since the Unix epoch.", "format": "unix-time"}, "id": {"maxLength": 5000, "type": "string", "description": "Unique identifier for the object."}, "last_error": {"description": "If present, this property tells you the last error encountered when processing the verification.", "nullable": true, "anyOf": [{"$ref": "#/components/schemas/gelato_session_last_error"}]}, "last_verification_report": {"description": "ID of the most recent VerificationReport. [Learn more about accessing detailed verification results.](https://docs.stripe.com/identity/verification-sessions#results)", "nullable": true, "anyOf": [{"maxLength": 5000, "type": "string"}, {"$ref": "#/components/schemas/identity.verification_report"}], "x-expansionResources": {"oneOf": [{"$ref": "#/components/schemas/identity.verification_report"}]}}, "livemode": {"type": "boolean", "description": "If the object exists in live mode, the value is `true`. If the object exists in test mode, the value is `false`."}, "metadata": {"type": "object", "additionalProperties": {"maxLength": 500, "type": "string"}, "description": "Set of [key-value pairs](https://docs.stripe.com/api/metadata) that you can attach to an object. This can be useful for storing additional information about the object in a structured format."}, "object": {"type": "string", "description": "String representing the object's type. Objects of the same type share the same value.", "enum": ["identity.verification_session"]}, "options": {"description": "A set of options for the session’s verification checks.", "nullable": true, "anyOf": [{"$ref": "#/components/schemas/gelato_verification_session_options"}]}, "provided_details": {"description": "Details provided about the user being verified. These details may be shown to the user.", "nullable": true, "anyOf": [{"$ref": "#/components/schemas/gelato_provided_details"}]}, "redaction": {"description": "Redaction status of this VerificationSession. If the VerificationSession is not redacted, this field will be null.", "nullable": true, "anyOf": [{"$ref": "#/components/schemas/verification_session_redaction"}]}, "related_customer": {"maxLength": 5000, "type": "string", "description": "Customer ID", "nullable": true}, "related_customer_account": {"maxLength": 5000, "type": "string", "description": "The ID of the Account representing a customer.", "nullable": true}, "related_person": {"$ref": "#/components/schemas/gelato_related_person"}, "status": {"type": "string", "description": "Status of this VerificationSession. [Learn more about the lifecycle of sessions](https://docs.stripe.com/identity/how-sessions-work).", "enum": ["canceled", "processing", "requires_input", "verified"]}, "type": {"type": "string", "description": "The type of [verification check](https://docs.stripe.com/identity/verification-checks) to be performed.", "enum": ["document", "id_number", "verification_flow"], "x-stripeBypassValidation": true}, "url": {"maxLength": 5000, "type": "string", "description": "The short-lived URL that you use to redirect a user to Stripe to submit their identity information. This URL expires after 48 hours and can only be used once. Don’t store it, log it, send it in emails or expose it to anyone other than the user. Refer to our docs on [verifying identity documents](https://docs.stripe.com/identity/verify-identity-documents?platform=web&type=redirect) to learn how to redirect users to Stripe.", "nullable": true}, "verification_flow": {"maxLength": 5000, "type": "string", "description": "The configuration token of a verification flow from the dashboard."}, "verified_outputs": {"description": "The user’s verified data.", "nullable": true, "anyOf": [{"$ref": "#/components/schemas/gelato_verified_outputs"}]}}, "description": "A VerificationSession guides you through the process of collecting and verifying the identities\nof your users. It contains details about the type of verification, such as what [verification\ncheck](/docs/identity/verification-checks) to perform. Only create one VerificationSession for\neach verification in your system.\n\nA VerificationSession transitions through [multiple\nstatuses](/docs/identity/how-sessions-work) throughout its lifetime as it progresses through\nthe verification flow. The VerificationSession contains the user's verified data after\nverification checks are complete.\n\nRelated guide: [The Verification Sessions API](https://docs.stripe.com/identity/verification-sessions)", "x-expandableFields": ["last_error", "last_verification_report", "options", "provided_details", "redaction", "related_person", "verified_outputs"], "x-resourceId": "identity.verification_session"}
+```

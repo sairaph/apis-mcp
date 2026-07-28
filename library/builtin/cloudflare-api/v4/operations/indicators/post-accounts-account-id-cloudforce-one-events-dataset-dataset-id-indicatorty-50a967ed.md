@@ -1,0 +1,29 @@
+---
+title: Create a new indicator type
+page_id: operation-post-accounts-account-id-cloudforce-one-events-dataset-dataset-id-indica-d038cf4e
+path: operations/indicators
+description: Creates a new indicator type and initializes its dedicated Durable Object
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - POST
+api_endpoints:
+    - /accounts/{account_id}/cloudforce-one/events/dataset/{dataset_id}/indicatorTypes/create
+operation_ids:
+    - post_IndicatorTypeCreate
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Create a new indicator type
+
+`POST /accounts/{account_id}/cloudforce-one/events/dataset/{dataset_id}/indicatorTypes/create`
+
+Operation ID: `post_IndicatorTypeCreate`
+
+Creates a new indicator type and initializes its dedicated Durable Object
+
+## Definition
+
+```yaml
+{"operationId": "post_IndicatorTypeCreate", "summary": "Create a new indicator type", "description": "Creates a new indicator type and initializes its dedicated Durable Object", "parameters": [{"name": "account_id", "in": "path", "description": "Account ID.", "required": true, "schema": {"description": "Account ID.", "type": "string"}}, {"name": "dataset_id", "in": "path", "description": "Dataset ID.", "required": true, "schema": {"description": "Dataset ID.", "type": "string"}}], "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"description": {"description": "Optional description for the indicator type", "type": "string"}, "indicatorType": {"description": "The indicator type to create (e.g., 'DOMAIN', 'IP', 'URL', 'HASH', 'EMAIL')", "type": "string", "maxLength": 50, "minLength": 1}}, "required": ["indicatorType"]}}}}, "responses": {"200": {"description": "Indicator type created successfully", "content": {"application/json": {"schema": {"type": "object", "properties": {"durableObjectId": {"type": "string", "example": "account:123:DOMAIN"}, "indicatorType": {"type": "string", "example": "DOMAIN"}, "message": {"type": "string", "example": "Indicator type created successfully"}}, "required": ["indicatorType", "message", "durableObjectId"]}}}}, "400": {"description": "Bad Request", "content": {"application/json": {"schema": {"type": "object", "properties": {"content": {"properties": {"application/json": {"type": "object", "properties": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"message": {"type": "string", "example": "An error occurred."}}, "required": ["message"], "type": "object"}}, "result": {"type": "object"}, "success": {"type": "boolean"}}, "required": ["result", "success", "errors"]}}, "required": ["schema"]}}, "required": ["application/json"], "type": "object"}, "description": {"type": "string", "example": "Bad Request."}}, "required": ["description", "content"]}}}}, "500": {"description": "Internal Server Error", "content": {"application/json": {"schema": {"type": "object", "properties": {"content": {"properties": {"application/json": {"type": "object", "properties": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"message": {"type": "string", "example": "An error occurred."}}, "required": ["message"], "type": "object"}}, "result": {"type": "object"}, "success": {"type": "boolean"}}, "required": ["result", "success", "errors"]}}, "required": ["schema"]}}, "required": ["application/json"], "type": "object"}, "description": {"type": "string", "example": "Bad Request."}}, "required": ["description", "content"]}}}}}, "security": [{"api_token": []}], "tags": ["Indicators"], "x-api-token-group": ["Cloudforce One Write", "Cloudforce One Read"]}
+```

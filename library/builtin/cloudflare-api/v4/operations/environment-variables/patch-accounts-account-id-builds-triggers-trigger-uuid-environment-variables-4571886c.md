@@ -1,0 +1,29 @@
+---
+title: Upsert environment variables
+page_id: operation-patch-accounts-account-id-builds-triggers-trigger-uuid-environment-varia-e804a388
+path: operations/environment-variables
+description: Create or update environment variables for a trigger
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - PATCH
+api_endpoints:
+    - /accounts/{account_id}/builds/triggers/{trigger_uuid}/environment_variables
+operation_ids:
+    - upsertEnvironmentVariables
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Upsert environment variables
+
+`PATCH /accounts/{account_id}/builds/triggers/{trigger_uuid}/environment_variables`
+
+Operation ID: `upsertEnvironmentVariables`
+
+Create or update environment variables for a trigger
+
+## Definition
+
+```yaml
+{"operationId": "upsertEnvironmentVariables", "summary": "Upsert environment variables", "description": "Create or update environment variables for a trigger", "parameters": [{"$ref": "#/components/parameters/builds_AccountId"}, {"$ref": "#/components/parameters/builds_TriggerUuid"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/builds_EnvironmentVariablesRequest"}}}}, "responses": {"200": {"description": "Environment variables updated successfully", "content": {"application/json": {"schema": {"allOf": [{"$ref": "#/components/schemas/builds_APIResponse"}, {"properties": {"result": {"$ref": "#/components/schemas/builds_EnvironmentVariablesResponse"}}, "type": "object"}]}}}}, "404": {"$ref": "#/components/responses/builds_NotFound"}}, "security": [{"api_token": []}, {"api_email": [], "api_key": []}], "tags": ["Environment Variables"], "x-api-token-group": ["Workers CI Write"], "x-fern-availability": "generally-available", "x-fern-sdk-group-name": "workers-builds.triggers.environment-variables", "x-fern-sdk-method-name": "upsert", "x-forge-hidden": true}
+```

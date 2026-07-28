@@ -1,0 +1,14 @@
+---
+title: issuing_authorization_fleet_fuel_price_data
+page_id: schema-issuing-authorization-fleet-fuel-price-data-c66b39a8
+path: schemas
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# issuing_authorization_fleet_fuel_price_data
+
+```yaml
+{"title": "IssuingAuthorizationFleetFuelPriceData", "type": "object", "properties": {"gross_amount_decimal": {"type": "string", "description": "Gross fuel amount that should equal Fuel Quantity multiplied by Fuel Unit Cost, inclusive of taxes.", "format": "decimal", "nullable": true}}, "description": "", "x-expandableFields": []}
+```

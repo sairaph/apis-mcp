@@ -1,0 +1,14 @@
+---
+title: aaa_audit-logs
+page_id: schema-aaa-audit-logs-bb792355
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# aaa_audit-logs
+
+```yaml
+{"type": "object", "properties": {"action": {"type": "object", "properties": {"result": {"description": "A boolean that indicates if the action attempted was successful.", "type": "boolean", "example": true}, "type": {"description": "A short string that describes the action that was performed.", "type": "string", "example": "change_setting"}}}, "actor": {"type": "object", "properties": {"email": {"description": "The email of the user that performed the action.", "type": "string", "format": "email", "example": "michelle@example.com"}, "id": {"description": "The ID of the actor that performed the action. If a user performed the action, this will be their User ID.", "type": "string", "example": "f6b5de0326bb5182b8a4840ee01ec774"}, "ip": {"description": "The IP address of the request that performed the action.", "type": "string", "example": "198.41.129.166"}, "type": {"description": "The type of actor, whether a User, Cloudflare Admin, or an Automated System.", "type": "string", "example": "user", "enum": ["user", "admin", "Cloudflare"]}}}, "id": {"description": "A string that uniquely identifies the audit log.", "type": "string", "example": "d5b0f326-1232-4452-8858-1089bd7168ef"}, "interface": {"description": "The source of the event.", "type": "string", "example": "API"}, "metadata": {"description": "An object which can lend more context to the action being logged. This is a flexible value and varies between different actions.", "type": "object", "example": {"name": "security_level", "type": "firewall", "value": "high", "zone_name": "example.com"}}, "newValue": {"description": "The new value of the resource that was modified.", "type": "string", "example": "low"}, "oldValue": {"description": "The value of the resource before it was modified.", "type": "string", "example": "high"}, "owner": {"type": "object", "properties": {"id": {"$ref": "#/components/schemas/aaa_identifier"}}}, "resource": {"type": "object", "properties": {"id": {"description": "An identifier for the resource that was affected by the action.", "type": "string", "example": "023e105f4ecef8ad9ca31a8372d0c353"}, "type": {"description": "A short string that describes the resource that was affected by the action.", "type": "string", "example": "zone"}}}, "when": {"description": "A UTC RFC3339 timestamp that specifies when the action being logged occured.", "type": "string", "format": "date-time", "example": "2017-04-26T17:31:07Z"}}}
+```

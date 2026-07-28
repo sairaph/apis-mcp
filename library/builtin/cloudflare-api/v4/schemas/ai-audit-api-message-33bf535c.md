@@ -1,0 +1,14 @@
+---
+title: ai-audit_api_message
+page_id: schema-ai-audit-api-message-33bf535c
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# ai-audit_api_message
+
+```yaml
+{"type": "object", "properties": {"code": {"type": "integer", "minimum": 1000}, "message": {"type": "string"}}, "required": ["code", "message"]}
+```

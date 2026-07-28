@@ -1,0 +1,14 @@
+---
+title: WebSearchObject
+page_id: schema-websearchobject-c7407d5b
+path: schemas
+source: https://docs.z.ai/openapi.json
+source_type: openapi
+imported_from: https://docs.z.ai/openapi.json
+---
+
+# WebSearchObject
+
+```yaml
+{"type": "object", "properties": {"enable": {"type": "boolean", "description": "Whether to enable search functionality.\nDefault is `false`. Set to true to `enable`."}, "search_engine": {"type": "string", "description": "Type of search engine.\nDefault is `search_pro_jina`. Supports: `search_pro_jina`.", "enum": ["search_pro_jina"]}, "search_query": {"type": "string", "description": "Force trigger a search"}, "count": {"type": "integer", "description": "Number of returned results\nRange: `1-50`, max `50` results per search\nDefault is `10`\nSupported engines: `search_pro_jina`\n", "minimum": 1, "maximum": 50}, "search_domain_filter": {"type": "string", "description": "Limits search results to specified whitelisted domains. Whitelist: input domains directly (e.g., www.example.com)\nSupported engines: `search_pro_jina`"}, "search_recency_filter": {"type": "string", "description": "Limits search to a specific time range.\nDefault is `noLimit`\nValues:\n`oneDay`, within a day\n`oneWeek`, within a week\n`oneMonth`, within a month\n`oneYear`, within a year\n`noLimit`, no limit (default)\nSupported engines: `search_pro_jina`", "enum": ["oneDay", "oneWeek", "oneMonth", "oneYear", "noLimit"]}, "content_size": {"type": "string", "description": "Number of characters for webpage summaries.\nDefault is `medium`\n`medium`: Balanced mode for most queries. 400-600 characters\n`high`: Maximizes context for comprehensive answers, 2500 characters.", "enum": ["medium", "high"]}, "result_sequence": {"type": "string", "description": "Specifies whether search results are shown before or after model response. Options: `before`, `after`. Default is `after`", "enum": ["before", "after"]}, "search_result": {"type": "boolean", "description": "Whether to return search results in the response.\nDefault is `false`"}, "require_search": {"type": "boolean", "description": "Whether to force model response based on search result.\nDefault is `false`"}, "search_prompt": {"type": "string", "description": "Prompt to customize how search results are processed.\nDefault Prompt:\n`You are an intelligent Q&A expert with the ability to synthesize information, recognize time, understand semantics, and clean contradictory data. The current date is {{current_date}}. Use this as the only time reference. Based on the following information, provide a comprehensive and accurate answer to the user's question.Only extract valuable content for the answer. Ensure the answer is timely and authoritative. State the answer directly without citing data sources or internal processes.`"}}, "required": ["search_engine"]}
+```

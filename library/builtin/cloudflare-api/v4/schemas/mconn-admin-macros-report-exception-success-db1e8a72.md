@@ -1,0 +1,14 @@
+---
+title: mconn_admin_macros_report_exception_success
+page_id: schema-mconn-admin-macros-report-exception-success-db1e8a72
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# mconn_admin_macros_report_exception_success
+
+```yaml
+{"type": "object", "allOf": [{"$ref": "#/components/schemas/mconn_envelope"}, {"properties": {"result": {"$ref": "#/components/schemas/mconn_admin_macros_report_exception_result"}}, "required": ["result"], "type": "object"}]}
+```

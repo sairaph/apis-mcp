@@ -47,7 +47,7 @@ type (
 // Open validates canonical sources, rebuilds a changed index, and pins the
 // resulting generation until the returned snapshot is closed.
 func Open(ctx context.Context, options Options) (*Snapshot, error) {
-	sources, err := canonicalSources(options.UserRoot)
+	sources, err := canonicalSources(options.UserRoot, options.ExcludeBuiltin)
 	if err != nil {
 		return nil, err
 	}
@@ -57,15 +57,18 @@ func Open(ctx context.Context, options Options) (*Snapshot, error) {
 // Rebuild validates and publishes a fingerprint-named SQLite generation. Open
 // snapshots continue to observe their original generation.
 func Rebuild(ctx context.Context, options Options) error {
-	sources, err := canonicalSources(options.UserRoot)
+	sources, err := canonicalSources(options.UserRoot, options.ExcludeBuiltin)
 	if err != nil {
 		return err
 	}
 	return internal.Rebuild(ctx, options, sources)
 }
 
-func canonicalSources(userRoot string) ([]internal.Source, error) {
-	sources := []internal.Source{{Name: "builtin", FS: builtinFiles}}
+func canonicalSources(userRoot string, excludeBuiltin bool) ([]internal.Source, error) {
+	sources := make([]internal.Source, 0, 2)
+	if !excludeBuiltin {
+		sources = append(sources, internal.Source{Name: "builtin", FS: builtinFiles})
+	}
 	if userRoot == "" {
 		return sources, nil
 	}

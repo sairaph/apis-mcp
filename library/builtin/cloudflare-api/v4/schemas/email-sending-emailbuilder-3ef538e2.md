@@ -1,0 +1,14 @@
+---
+title: email-sending_EmailBuilder
+page_id: schema-email-sending-emailbuilder-3ef538e2
+path: schemas
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# email-sending_EmailBuilder
+
+```yaml
+{"type": "object", "properties": {"attachments": {"description": "File attachments and inline images.", "type": "array", "items": {"discriminator": {"mapping": {"attachment": "#/components/schemas/email-sending_EmailAttachment", "inline": "#/components/schemas/email-sending_EmailInlineAttachment"}, "propertyName": "disposition"}, "oneOf": [{"$ref": "#/components/schemas/email-sending_EmailInlineAttachment"}, {"$ref": "#/components/schemas/email-sending_EmailAttachment"}]}}, "bcc": {"allOf": [{"$ref": "#/components/schemas/email-sending_NamedRecipientList"}, {"description": "BCC recipient(s). A single email string, a named address object, or an array of either."}]}, "cc": {"allOf": [{"$ref": "#/components/schemas/email-sending_NamedRecipientList"}, {"description": "CC recipient(s). A single email string, a named address object, or an array of either."}]}, "from": {"description": "Sender email address. Either a plain string or an object with address and name.", "oneOf": [{"$ref": "#/components/schemas/email-sending_EmailAddressString"}, {"$ref": "#/components/schemas/email-sending_EmailAddressObject"}]}, "headers": {"description": "Custom email headers as key-value pairs.", "type": "object", "example": {"X-Custom-Header": "value"}, "additionalProperties": {"type": "string"}}, "html": {"description": "HTML body of the email. Provide at least one of text or html (non-empty).", "type": "string", "example": "<h1>Hello</h1><p>Please find your report attached.</p>"}, "reply_to": {"description": "Reply-to address. Either a plain string or an object with address and name.", "oneOf": [{"$ref": "#/components/schemas/email-sending_EmailAddressString"}, {"$ref": "#/components/schemas/email-sending_EmailAddressObject"}]}, "subject": {"description": "Email subject line.", "type": "string", "example": "Monthly Report"}, "text": {"description": "Plain text body of the email. Provide at least one of text or html (non-empty).", "type": "string", "example": "Hello\n\nPlease find your report attached."}, "to": {"$ref": "#/components/schemas/email-sending_NamedRecipientList"}}, "example": {"attachments": [{"content": "JVBERi0xLjQK...", "disposition": "attachment", "filename": "report.pdf", "type": "application/pdf"}], "from": "sender@example.com", "html": "<h1>Hello</h1><p>Please find your report attached.</p>", "subject": "Monthly Report", "text": "Hello\n\nPlease find your report attached.", "to": ["recipient@example.com"]}, "additionalProperties": false, "required": ["from", "subject"]}
+```

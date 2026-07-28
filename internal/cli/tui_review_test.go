@@ -149,7 +149,7 @@ func TestCancellableCloseAndPagesRollback(t *testing.T) {
 func TestSnapshotSwapStaleAndPendingTeardownCloseImmediately(t *testing.T) {
 	m, closeFixture := documentationFixture(t)
 	defer closeFixture()
-	first, err := library.Open(context.Background(), libraryOptions(m.runtime))
+	first, err := library.Open(context.Background(), fixtureLibraryOptions(m.runtime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,21 +158,21 @@ func TestSnapshotSwapStaleAndPendingTeardownCloseImmediately(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.applyReload(reloadPayload{snapshot: first, collections: collections, apis: apis})
-	second, err := library.Open(context.Background(), libraryOptions(m.runtime))
+	second, err := library.Open(context.Background(), fixtureLibraryOptions(m.runtime))
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.applyReload(reloadPayload{snapshot: second, collections: collections, apis: apis})
 	assertSnapshotClosed(t, first)
 
-	stale, err := library.Open(context.Background(), libraryOptions(m.runtime))
+	stale, err := library.Open(context.Background(), fixtureLibraryOptions(m.runtime))
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.accept(asyncMsg{id: 999, value: reloadPayload{snapshot: stale}})
 	assertSnapshotClosed(t, stale)
 
-	pending, err := library.Open(context.Background(), libraryOptions(m.runtime))
+	pending, err := library.Open(context.Background(), fixtureLibraryOptions(m.runtime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +180,12 @@ func TestSnapshotSwapStaleAndPendingTeardownCloseImmediately(t *testing.T) {
 	m.close()
 	assertSnapshotClosed(t, pending)
 	assertSnapshotClosed(t, second)
+}
+
+func fixtureLibraryOptions(runtime *bootstrap.Runtime) library.Options {
+	options := libraryOptions(runtime)
+	options.ExcludeBuiltin = true
+	return options
 }
 
 func assertSnapshotClosed(t *testing.T, snapshot *library.Snapshot) {

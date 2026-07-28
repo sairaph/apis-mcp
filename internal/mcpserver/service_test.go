@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -273,8 +274,10 @@ func TestSessionPaginationUsesExactRenderedBoundary(t *testing.T) {
 func testRuntime(t *testing.T) *bootstrap.Runtime {
 	t.Helper()
 	root := t.TempDir()
+	libraryRoot := filepath.Join(root, "library")
+	writeTestDocumentation(t, libraryRoot)
 	snapshot, err := library.Open(context.Background(), library.Options{
-		IndexPath: filepath.Join(root, "library.sqlite"), ListTokenBudget: 2_000, ReadTokenBudget: 4_000,
+		UserRoot: libraryRoot, IndexPath: filepath.Join(root, "library.sqlite"), ListTokenBudget: 2_000, ReadTokenBudget: 4_000, ExcludeBuiltin: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -306,6 +309,24 @@ func testRuntime(t *testing.T) *bootstrap.Runtime {
 		}
 	})
 	return runtime
+}
+
+func writeTestDocumentation(t *testing.T, root string) {
+	t.Helper()
+	files := map[string]string{
+		"_index.md":       "---\nname: Example API\nversion: v1\ndescription: Test API.\ncollections: [examples]\n---\n",
+		"overview.md":     "---\ntitle: Example API overview\ndescription: Start here.\n---\n\n# Example API overview\n",
+		"items/create.md": "---\ntitle: Create an item\nhttp_methods: [POST]\napi_endpoints: [/items]\noperation_ids: [createItem]\n---\n\n# Create an item\n\nSend a POST request.\n\n```json\n{\"name\":\"example\"}\n```\n",
+	}
+	for relative, content := range files {
+		name := filepath.Join(root, "example", "v1", relative)
+		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func testClient(t *testing.T, runtime *bootstrap.Runtime, versions ...string) *mcp.ClientSession {

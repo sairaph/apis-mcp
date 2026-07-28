@@ -1,0 +1,29 @@
+---
+title: Connect to a specific Chrome DevTools page.
+page_id: operation-get-accounts-account-id-browser-rendering-devtools-browser-session-id-pa-4560632f
+path: operations/brapi
+description: Establishes a WebSocket connection to a specific Chrome DevTools target or page.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+http_methods:
+    - GET
+api_endpoints:
+    - /accounts/{account_id}/browser-rendering/devtools/browser/{session_id}/page/{target_id}
+operation_ids:
+    - brapi-get_DevtoolsPage
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# Connect to a specific Chrome DevTools page.
+
+`GET /accounts/{account_id}/browser-rendering/devtools/browser/{session_id}/page/{target_id}`
+
+Operation ID: `brapi-get_DevtoolsPage`
+
+Establishes a WebSocket connection to a specific Chrome DevTools target or page.
+
+## Definition
+
+```yaml
+{"operationId": "brapi-get_DevtoolsPage", "summary": "Connect to a specific Chrome DevTools page.", "description": "Establishes a WebSocket connection to a specific Chrome DevTools target or page.", "parameters": [{"name": "account_id", "in": "path", "description": "Account ID.", "required": true, "schema": {"description": "Account ID.", "type": "string"}}, {"name": "session_id", "in": "path", "description": "Browser session ID.", "required": true, "schema": {"description": "Browser session ID.", "type": "string", "format": "uuid"}}, {"name": "target_id", "in": "path", "description": "Target ID, e.g. page ID.", "required": true, "schema": {"description": "Target ID, e.g. page ID.", "type": "string", "pattern": "^[a-zA-Z0-9]+$"}}], "responses": {"101": {"description": "WebSocket connection established successfully."}, "400": {"description": "Bad request.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"code": {"description": "Error code.", "type": "number"}, "message": {"description": "Error message.", "type": "string"}}, "required": ["message", "code"], "type": "object"}}, "success": {"description": "Response status.", "type": "boolean"}}, "required": ["success"]}}}}, "500": {"description": "Internal server error.", "content": {"application/json": {"schema": {"type": "object", "properties": {"errors": {"type": "array", "items": {"properties": {"code": {"description": "Error code.", "type": "number"}, "message": {"description": "Error message.", "type": "string"}}, "required": ["message", "code"], "type": "object"}}, "success": {"description": "Response status.", "type": "boolean"}}, "required": ["success"]}}}}}, "security": [{"api_email": [], "api_key": [], "api_token": []}], "tags": ["brapi"], "x-api-token-group": ["Browser Rendering Write", "Browser Rendering Read"], "x-cfPermissionsRequired": {"enum": ["com.cloudflare.api.account.brapi.read"], "type": "string"}, "x-cfPlanAvailability": {"business": true, "enterprise": true, "free": true, "pro": true}, "x-fern-availability": "generally-available", "x-fern-sdk-group-name": "browser-run.devtools.browser.page", "x-fern-sdk-method-name": "get", "x-forge-hidden": true}
+```

@@ -1,0 +1,22 @@
+---
+title: billing.credit_grant
+page_id: schema-billing-credit-grant-62ecd1b9
+path: schemas
+description: |-
+    A credit grant is an API resource that documents the allocation of some billing credits to a customer.
+
+    Related guide: [Billing credits](https://docs.stripe.com/billing/subscriptions/usage-based/billing-credits)
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# billing.credit_grant
+
+A credit grant is an API resource that documents the allocation of some billing credits to a customer.
+
+Related guide: [Billing credits](https://docs.stripe.com/billing/subscriptions/usage-based/billing-credits)
+
+```yaml
+{"title": "CreditGrant", "required": ["amount", "applicability_config", "category", "created", "customer", "id", "livemode", "metadata", "object", "updated"], "type": "object", "properties": {"amount": {"$ref": "#/components/schemas/billing_credit_grants_resource_amount"}, "applicability_config": {"$ref": "#/components/schemas/billing_credit_grants_resource_applicability_config"}, "category": {"type": "string", "description": "The category of this credit grant. This is for tracking purposes and isn't displayed to the customer.", "enum": ["paid", "promotional"]}, "created": {"type": "integer", "description": "Time at which the object was created. Measured in seconds since the Unix epoch.", "format": "unix-time"}, "customer": {"description": "ID of the customer receiving the billing credits.", "anyOf": [{"maxLength": 5000, "type": "string"}, {"$ref": "#/components/schemas/customer"}, {"$ref": "#/components/schemas/deleted_customer"}], "x-expansionResources": {"oneOf": [{"$ref": "#/components/schemas/customer"}, {"$ref": "#/components/schemas/deleted_customer"}]}}, "customer_account": {"maxLength": 5000, "type": "string", "description": "ID of the account representing the customer receiving the billing credits", "nullable": true}, "effective_at": {"type": "integer", "description": "The time when the billing credits become effective-when they're eligible for use.", "format": "unix-time", "nullable": true}, "expires_at": {"type": "integer", "description": "The time when the billing credits expire. If not present, the billing credits don't expire.", "format": "unix-time", "nullable": true}, "id": {"maxLength": 5000, "type": "string", "description": "Unique identifier for the object."}, "livemode": {"type": "boolean", "description": "If the object exists in live mode, the value is `true`. If the object exists in test mode, the value is `false`."}, "metadata": {"type": "object", "additionalProperties": {"maxLength": 500, "type": "string"}, "description": "Set of [key-value pairs](https://docs.stripe.com/api/metadata) that you can attach to an object. This can be useful for storing additional information about the object in a structured format."}, "name": {"maxLength": 5000, "type": "string", "description": "A descriptive name shown in dashboard.", "nullable": true}, "object": {"type": "string", "description": "String representing the object's type. Objects of the same type share the same value.", "enum": ["billing.credit_grant"]}, "priority": {"type": "integer", "description": "The priority for applying this credit grant. The highest priority is 0 and the lowest is 100.", "nullable": true}, "test_clock": {"description": "ID of the test clock this credit grant belongs to.", "nullable": true, "anyOf": [{"maxLength": 5000, "type": "string"}, {"$ref": "#/components/schemas/test_helpers.test_clock"}], "x-expansionResources": {"oneOf": [{"$ref": "#/components/schemas/test_helpers.test_clock"}]}}, "updated": {"type": "integer", "description": "Time at which the object was last updated. Measured in seconds since the Unix epoch.", "format": "unix-time"}, "voided_at": {"type": "integer", "description": "The time when this credit grant was voided. If not present, the credit grant hasn't been voided.", "format": "unix-time", "nullable": true}}, "description": "A credit grant is an API resource that documents the allocation of some billing credits to a customer.\n\nRelated guide: [Billing credits](https://docs.stripe.com/billing/subscriptions/usage-based/billing-credits)", "x-expandableFields": ["amount", "applicability_config", "customer", "test_clock"], "x-resourceId": "billing.credit_grant"}
+```

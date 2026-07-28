@@ -1,0 +1,14 @@
+---
+title: payment_flows_private_payment_methods_payco_payment_method_options
+page_id: schema-payment-flows-private-payment-methods-payco-payment-method-options-005e08ca
+path: schemas
+source: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/stripe/openapi/a2de9917ac9c7be3ba11abd5151b5c2df3add59e/latest/openapi.spec3.json
+---
+
+# payment_flows_private_payment_methods_payco_payment_method_options
+
+```yaml
+{"title": "PaymentFlowsPrivatePaymentMethodsPaycoPaymentMethodOptions", "type": "object", "properties": {"capture_method": {"type": "string", "description": "Controls when the funds will be captured from the customer's account.", "enum": ["manual"]}}, "description": "", "x-expandableFields": []}
+```

@@ -1,0 +1,17 @@
+---
+title: workers_namespace-script-and-version-settings-item
+page_id: schema-workers-namespace-script-and-version-settings-item-8df51bb3
+path: schemas
+description: Script and version settings for Workers for Platforms namespace scripts. Same as script-and-version-settings-item but without annotations, which are not supported for namespace scripts.
+source: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+source_type: openapi
+imported_from: https://raw.githubusercontent.com/cloudflare/api-schemas/c92b9b0fde23ae00fece2025662f96dc8e2d6283/openapi.json
+---
+
+# workers_namespace-script-and-version-settings-item
+
+Script and version settings for Workers for Platforms namespace scripts. Same as script-and-version-settings-item but without annotations, which are not supported for namespace scripts.
+
+```yaml
+{"description": "Script and version settings for Workers for Platforms namespace scripts. Same as script-and-version-settings-item but without annotations, which are not supported for namespace scripts.\n", "type": "object", "properties": {"bindings": {"allOf": [{"$ref": "#/components/schemas/workers_bindings"}, {"default": [], "items": {"$ref": "#/components/schemas/workers_binding_item"}, "type": "array"}]}, "cache_options": {"$ref": "#/components/schemas/workers_cache_options"}, "compatibility_date": {"allOf": [{"$ref": "#/components/schemas/workers_compatibility_date"}, {"default": "", "type": "string", "x-auditable": true}]}, "compatibility_flags": {"allOf": [{"$ref": "#/components/schemas/workers_compatibility_flags"}, {"default": [], "items": {"type": "string", "x-auditable": true}, "type": "array", "x-stainless-collection-type": "set"}]}, "exports": {"description": "Declarative exports for the Worker. Worker entrypoint entries\n(`type: worker`) carry cache configuration for that entrypoint.\n", "allOf": [{"$ref": "#/components/schemas/workers_exports_config_map"}], "writeOnly": true}, "exports_reconciliation": {"description": "Summary of the declarative exports reconciliation that ran on\nthis upload. Populated only when the uploaded metadata included\nan `exports` block. Durable Object entries drive reconciliation;\n`type: worker` entries do not contribute to this summary.\n", "allOf": [{"$ref": "#/components/schemas/workers_exports_reconciliation_result"}]}, "limits": {"$ref": "#/components/schemas/workers_limits"}, "logpush": {"$ref": "#/components/schemas/workers_logpush"}, "migrations": {"description": "Migrations to apply for Durable Objects associated with this Worker.\n", "oneOf": [{"$ref": "#/components/schemas/workers_single_step_migrations"}, {"$ref": "#/components/schemas/workers_multiple_step_migrations"}], "writeOnly": true}, "observability": {"$ref": "#/components/schemas/workers_observability"}, "placement": {"allOf": [{"$ref": "#/components/schemas/workers_placement_info_no_status"}, {"default": {}, "type": "object"}]}, "tags": {"allOf": [{"$ref": "#/components/schemas/workers_tags"}, {"default": [], "items": {"type": "string", "x-auditable": true}, "type": "array", "x-stainless-collection-type": "set"}]}, "tail_consumers": {"allOf": [{"$ref": "#/components/schemas/workers_tail_consumers"}, {"default": [], "items": {"$ref": "#/components/schemas/workers_tail_consumers_script"}, "type": "array", "x-stainless-collection-type": "set"}]}, "usage_model": {"$ref": "#/components/schemas/workers_usage_model"}}}
+```

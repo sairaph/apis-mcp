@@ -1,0 +1,17 @@
+---
+title: ModelResponse
+page_id: schema-modelresponse-4b27a81d
+path: schemas
+description: Single model response
+source: https://openrouter.ai/openapi.json
+source_type: openapi
+imported_from: https://openrouter.ai/openapi.json
+---
+
+# ModelResponse
+
+Single model response
+
+```yaml
+{"description": "Single model response", "example": {"data": {"architecture": {"input_modalities": ["text"], "instruct_type": "chatml", "modality": "text->text", "output_modalities": ["text"], "tokenizer": "GPT"}, "canonical_slug": "openai/gpt-4", "context_length": 8192, "created": 1692901234, "default_parameters": null, "description": "GPT-4 is a large multimodal model that can solve difficult problems with greater accuracy.", "expiration_date": null, "id": "openai/gpt-4", "knowledge_cutoff": null, "links": {"details": "/api/v1/models/openai/gpt-4/endpoints"}, "name": "GPT-4", "per_request_limits": null, "pricing": {"completion": "0.00006", "image": "0", "prompt": "0.00003", "request": "0"}, "supported_parameters": ["temperature", "top_p", "max_tokens"], "supported_voices": null, "top_provider": {"context_length": 8192, "is_moderated": true, "max_completion_tokens": 4096}}}, "properties": {"data": {"$ref": "#/components/schemas/Model"}}, "required": ["data"], "type": "object"}
+```

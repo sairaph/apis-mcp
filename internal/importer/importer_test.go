@@ -191,7 +191,7 @@ components:
 		t.Fatalf("schema files: %v", schemaFiles)
 	}
 
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestImportOpenAPIDiscoversAllStaticRapiDocSpecifications(t *testing.T) {
 			t.Fatalf("generated %s: %v, %v", relative, files, globErr)
 		}
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -874,7 +874,7 @@ func TestImportHTMLDetectsAndScrapesMkDocsMaterialSitemap(t *testing.T) {
 			t.Errorf("generated Material Markdown contains %q:\n%s", unwanted, generated)
 		}
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1455,7 +1455,7 @@ fn nested() {}
 	if count := strings.Count(generated, "![Diagram]("); count != 1 {
 		t.Errorf("mdBook zoom image count = %d, want 1", count)
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1774,7 +1774,7 @@ func TestImportHTMLExhaustsScopedAstroStarlightSitemapIndex(t *testing.T) {
 			t.Errorf("generated Astro Starlight Markdown contains chrome %q", excluded)
 		}
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1923,7 +1923,7 @@ func TestImportDocsifyExhaustsPinnedGitHubMarkdownTree(t *testing.T) {
 			t.Errorf("generated Docsify Markdown missing %q:\n%s", wanted, generated)
 		}
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2119,7 +2119,7 @@ func TestImportLLMSTxtReadsRelativeLocalFiles(t *testing.T) {
 
 func rebuildFunc(root, index string) func(context.Context) error {
 	return func(ctx context.Context) error {
-		return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index})
+		return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
 	}
 }
 
