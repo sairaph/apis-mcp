@@ -264,7 +264,9 @@ func publishCatalog(ctx context.Context, generation string, catalog *catalog) (r
 	if err := os.Chmod(temporaryPath, 0o600); err != nil {
 		return fmt.Errorf("secure temporary library index: %w", err)
 	}
-	file, err := os.Open(temporaryPath)
+	// FlushFileBuffers requires a write-capable handle on Windows. os.Open uses
+	// a read-only handle there and returns ERROR_ACCESS_DENIED from Sync.
+	file, err := os.OpenFile(temporaryPath, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}

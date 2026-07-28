@@ -66,6 +66,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Test Windows library index publication
+        shell: powershell
+        run: go test ./internal/library
       - name: Test installer with Windows PowerShell 5.1
         shell: powershell
         run: ./tests/installer_test.ps1

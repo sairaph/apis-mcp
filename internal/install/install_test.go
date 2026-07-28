@@ -89,6 +89,57 @@ func TestAtomicPublishRejectsConcurrentSourceChange(t *testing.T) {
 	}
 }
 
+func TestConcurrentClientUpdateRetriesAndMergesLatestSource(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "opencode.json")
+	if err := os.WriteFile(path, []byte(`{"theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleBackup := filepath.Join(directory, "stale.backup")
+	client := Client{ID: "opencode", Name: "OpenCode", Format: FormatOpenCode, ConfigPath: path}
+	attempts := 0
+	result, err := retryClientUpdate(func() (Result, error) {
+		attempts++
+		if attempts == 1 {
+			if err := os.WriteFile(staleBackup, []byte("unused"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(`{"theme":"light","unrelated":true}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return Result{Client: client, Backup: staleBackup}, ErrConcurrentChange
+		}
+		return updateClientOnce(client, "/bin/apis-mcp", false, Options{Backup: true})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 || !result.Changed {
+		t.Fatalf("retry result = attempts %d, %+v", attempts, result)
+	}
+	if _, err := os.Stat(staleBackup); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unused retry backup was not removed: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"theme": "light"`) || !strings.Contains(string(raw), `"unrelated": true`) || !strings.Contains(string(raw), `"apis-mcp"`) {
+		t.Fatalf("latest OpenCode config was not merged: %s", raw)
+	}
+}
+
+func TestExhaustedConcurrentRetriesAreNotReportedChanged(t *testing.T) {
+	attempts := 0
+	result, err := retryClientUpdate(func() (Result, error) {
+		attempts++
+		return Result{Changed: true}, ErrConcurrentChange
+	})
+	if !errors.Is(err, ErrConcurrentChange) || result.Changed || attempts != clientUpdateAttempts {
+		t.Fatalf("exhausted retry = attempts %d result %+v err %v", attempts, result, err)
+	}
+}
+
 func TestConfigureJSONPreservesServersAndIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".cursor", "mcp.json")

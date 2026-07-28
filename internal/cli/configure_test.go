@@ -100,7 +100,7 @@ func TestSetupDoneOnlyFollowsSuccessfulApply(t *testing.T) {
 func TestSetupFailureDoesNotRenderSuccessGuidance(t *testing.T) {
 	state := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), nil)
 	state.Update(setupAppliedMsg{
-		err: errors.New("save failed"),
+		err: errors.New("Failed Client: client update failed"),
 		results: []clientApplyResult{{
 			client: install.Client{Name: "Failed Client"}, changed: true, err: errors.New("client update failed"),
 		}},
@@ -111,7 +111,10 @@ func TestSetupFailureDoesNotRenderSuccessGuidance(t *testing.T) {
 			t.Fatalf("failed setup rendered success guidance %q:\n%s", misleading, view)
 		}
 	}
-	if !strings.Contains(view, "save failed") {
+	if !strings.Contains(view, "client update failed") {
 		t.Fatalf("failed setup omitted its error:\n%s", view)
+	}
+	if strings.Count(view, "Failed Client") != 1 {
+		t.Fatalf("failed setup duplicated its client error:\n%s", view)
 	}
 }

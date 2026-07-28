@@ -276,7 +276,7 @@ func (m *setupModel) applySetup() tea.Cmd {
 				result.changed, result.path, result.backup = applied[0].Changed, applied[0].Path, applied[0].Backup
 			}
 			if err != nil {
-				failures = append(failures, fmt.Errorf("%s: %w", status.Client.Name, err))
+				failures = append(failures, err)
 			}
 			results = append(results, result)
 		}
@@ -403,7 +403,7 @@ func (m *setupModel) viewSetupSettings() string {
 func (m *setupModel) viewSetupDone() string {
 	var out strings.Builder
 	out.WriteString(setupHeader() + "\n\n")
-	if m.failure != nil {
+	if m.failure != nil && len(m.results) == 0 {
 		out.WriteString(styleError.Render("  "+m.failure.Error()) + "\n\n")
 	}
 	if len(m.results) == 0 && m.failure == nil {
@@ -413,7 +413,7 @@ func (m *setupModel) viewSetupDone() string {
 		for _, result := range m.results {
 			state := result.action
 			if result.err != nil {
-				state = styleError.Render(result.err.Error())
+				state = styleError.Render(strings.TrimPrefix(result.err.Error(), result.client.Name+": "))
 			} else if !result.changed {
 				state = "unchanged"
 			}

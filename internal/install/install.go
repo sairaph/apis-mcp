@@ -28,6 +28,8 @@ const serverName = "apis-mcp"
 // overwritten.
 var ErrConcurrentChange = errors.New("client configuration changed concurrently")
 
+const clientUpdateAttempts = 8
+
 // Format identifies a client's configuration representation.
 type Format string
 
@@ -237,6 +239,37 @@ func selectClients(registry []Client, options Options) ([]Client, error) {
 }
 
 func updateClient(client Client, executable string, remove bool, options Options) (Result, error) {
+	return retryClientUpdate(func() (Result, error) {
+		return updateClientOnce(client, executable, remove, options)
+	})
+}
+
+func retryClientUpdate(action func() (Result, error)) (Result, error) {
+	var result Result
+	var err error
+	for attempt := 0; attempt < clientUpdateAttempts; attempt++ {
+		result, err = action()
+		if !errors.Is(err, ErrConcurrentChange) {
+			return result, err
+		}
+		// A failed attempt may have created a backup before an external writer
+		// won the final source check. It was never used, so do not leave it behind.
+		if result.Backup != "" {
+			if removeErr := os.Remove(result.Backup); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				result.Changed = false
+				return result, fmt.Errorf("remove unused retry backup: %w", removeErr)
+			}
+			result.Backup = ""
+		}
+		if attempt+1 < clientUpdateAttempts {
+			time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
+		}
+	}
+	result.Changed = false
+	return result, err
+}
+
+func updateClientOnce(client Client, executable string, remove bool, options Options) (Result, error) {
 	result := Result{Client: client, Path: client.ConfigPath, DryRun: options.DryRun, Removed: remove}
 	raw, err := os.ReadFile(client.ConfigPath)
 	missing := errors.Is(err, os.ErrNotExist)
@@ -256,8 +289,8 @@ func updateClient(client Client, executable string, remove bool, options Options
 	if remove && !present || bytes.Equal(raw, next) {
 		return result, nil
 	}
-	result.Changed = true
 	if options.DryRun {
+		result.Changed = true
 		return result, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(client.ConfigPath), 0o700); err != nil {
@@ -286,6 +319,7 @@ func updateClient(client Client, executable string, remove bool, options Options
 	if err := writeAtomic(client.ConfigPath, next, mode, raw, missing); err != nil {
 		return result, err
 	}
+	result.Changed = true
 	return result, nil
 }
 
