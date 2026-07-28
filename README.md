@@ -1,45 +1,84 @@
 # apis-mcp
 
-`apis-mcp` is a local API documentation library, HTTP workspace, CLI, and MCP
-server in one Go binary. It gives AI clients searchable API references and a
-general HTTP caller without requiring a hosted service.
+[![release](https://img.shields.io/github/v/release/sairaph/apis-mcp?include_prereleases&label=release)](https://github.com/sairaph/apis-mcp/releases)
+[![CI](https://github.com/sairaph/apis-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/sairaph/apis-mcp/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/sairaph/apis-mcp)](#license)
+[![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue)](#what-it-does)
 
-## Features
+Give any AI agent a **searchable API reference and HTTP workspace** through
+**7 MCP tools**, with 12,989 documentation pages built into one Go binary, a
+universal installer, built-in client detection, and a full TUI for you.
 
-- Seven direct MCP tools: `apis_collections`, `apis_list`, `apis_pages`,
+macOS:
+
+```bash
+curl -fsSL https://github.com/sairaph/apis-mcp/raw/main/install.sh | sh
+```
+
+Linux:
+
+```bash
+curl -fsSL https://github.com/sairaph/apis-mcp/raw/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/sairaph/apis-mcp/raw/main/install.ps1 | iex
+```
+
+The installer downloads the right binary for your OS and architecture, puts
+`apis-mcp` on your `PATH`, then opens an interactive configurer. It detects your
+AI clients and lets you choose which ones to connect. Run `apis-mcp configure`
+anytime to change what is connected.
+
+> **After installing, open a new terminal.** The installer adds itself to your
+> `PATH`, but the terminal it ran in keeps the `PATH` it started with.
+
+## What it does
+
+- **12,989 built-in documentation pages** - searchable references for
+  Cloudflare, OpenRouter, Stripe, Tailscale, Tavily, Z.ai, and the example API.
+- **Seven direct MCP tools** - `apis_collections`, `apis_list`, `apis_pages`,
   `apis_search`, `apis_read`, `apis_call`, and `apis_sessions`.
-- Canonical Markdown documentation with YAML frontmatter.
-- OpenAPI 3.x, Swagger 2.x, `llms.txt`, and Markdown-directory imports.
-- SQLite FTS search rebuilt entirely from canonical Markdown.
-- Persistent HTTP response cache and UUIDv7 cookie sessions.
-- Retries, redirects, compressed responses, JSONPath previews, and background
-  downloads.
-- Full-screen terminal app and human-oriented one-shot CLI commands.
-- Idempotent configuration for 13 MCP clients.
-- One CGO-free binary for Linux, macOS, and Windows on amd64 and arm64.
+- **Local and inspectable** - canonical Markdown with YAML frontmatter and a
+  SQLite full-text index rebuilt entirely from those source files.
+- **Bring your own references** - import OpenAPI 3.x, Swagger 2.x, `llms.txt`,
+  and Markdown directories alongside the built-in catalog.
+- **A capable HTTP workspace** - persistent response caching, UUIDv7 cookie
+  sessions, retries, redirects, compressed responses, JSONPath previews, and
+  background downloads.
+- **A CLI and full-screen app** - browse documentation, make requests, and
+  manage sessions outside an AI client.
+- **Detects 13 AI clients** - configuration is safe to rerun and preserves
+  other registered MCP servers.
+- **Single static binary** - one CGO-free Go binary for Linux, macOS, and
+  Windows on amd64 and arm64.
 
 ## Install
 
-Linux or macOS:
+**macOS / Linux** - downloads the matching binary to `~/.apis-mcp/bin` and adds
+it to your `PATH`:
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/sairaph/apis-mcp/main/install.sh | sh
+```bash
+curl -fsSL https://github.com/sairaph/apis-mcp/raw/main/install.sh | sh
 ```
 
-Windows PowerShell:
+**Windows (PowerShell)** - downloads to `%LOCALAPPDATA%\apis-mcp` and adds it to
+your user `PATH`:
 
 ```powershell
-irm https://raw.githubusercontent.com/sairaph/apis-mcp/main/install.ps1 | iex
+irm https://github.com/sairaph/apis-mcp/raw/main/install.ps1 | iex
 ```
 
-Run `apis-mcp configure` again whenever you want to register newly installed AI
-clients. Run `apis-mcp` in a terminal to open the full-screen application.
-The installers resolve one concrete GitHub release, verify the selected binary
-against that release's `SHA256SUMS.txt`, and only then replace an existing
-installation. The Unix installer updates existing startup files for Bash, Zsh,
-Fish, and POSIX shells without creating a profile. If no supported shell
-profile or interactive terminal is available, the installers print the exact
-PATH or configuration command to run later instead of silently skipping setup.
+Each installer picks the matching asset for your OS and architecture from the
+latest [GitHub Release](https://github.com/sairaph/apis-mcp/releases). If no
+supported shell profile or interactive terminal is available, it prints the
+exact `PATH` or configuration command to run later instead of silently skipping
+setup.
+
+Run `apis-mcp configure` whenever you want to change registered AI clients. Run
+`apis-mcp` in a terminal to open the full-screen application.
 
 ## Documentation Library
 
