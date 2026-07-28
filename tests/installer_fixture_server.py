@@ -5,6 +5,14 @@ from pathlib import Path
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/install.ps1":
+            body = (self.server.fixture_root / "install.ps1").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/releases/latest":
             self.send_response(302)
             self.send_header("Location", "/releases/tag/v1.2.3")

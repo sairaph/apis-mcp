@@ -402,13 +402,14 @@ PASSED=$((PASSED + 1))
 
 grep -Fq '[System.IO.File]::Replace($staged, $Target' "$ROOT/install.ps1" || fail 'PowerShell does not use staged File.Replace'
 grep -Fq 'Get-FileHash -LiteralPath $staged -Algorithm SHA256' "$ROOT/install.ps1" || fail 'PowerShell checksum verification is missing'
-grep -Fq '$response.Dispose()' "$ROOT/install.ps1" || fail 'PowerShell response disposal is missing'
+grep -Fq '$response.Close()' "$ROOT/install.ps1" || fail 'PowerShell response closure is missing'
 grep -Fq '$stream.Dispose()' "$ROOT/install.ps1" || fail 'PowerShell stream disposal is missing'
 grep -Fq '$file.Dispose()' "$ROOT/install.ps1" || fail 'PowerShell file disposal is missing'
 grep -Fq '$ProgressPreference = $previousProgressPreference' "$ROOT/install.ps1" || fail 'PowerShell progress preference is not restored'
-count=$(grep -Fc '$null = $response.EnsureSuccessStatusCode()' "$ROOT/install.ps1" || true)
-[ "$count" -eq 2 ] || fail 'PowerShell HTTP status helper output is not suppressed'
-grep -Fq 'throw [System.InvalidOperationException]::new($formattedFailure)' "$ROOT/install.ps1" || fail 'PowerShell failures are not terminating formatted errors'
+count=$(grep -Fc '[System.Net.HttpWebRequest]::Create($Url)' "$ROOT/install.ps1" || true)
+[ "$count" -eq 2 ] || fail 'PowerShell 5.1-compatible HTTP transport is missing'
+grep -Fq 'Installation failed: $($installerFailure.Exception.Message)' "$ROOT/install.ps1" || fail 'PowerShell failures are not rendered concisely'
+grep -Fq '$global:LASTEXITCODE = 1' "$ROOT/install.ps1" || fail 'PowerShell failures do not set a failing status'
 grep -Fq "'^(AMD64|x64|X64)$' { 'amd64'" "$ROOT/install.ps1" || fail 'PowerShell amd64 mapping is missing'
 grep -Fq "'^ARM64$' { 'arm64'" "$ROOT/install.ps1" || fail 'PowerShell arm64 mapping is missing'
 grep -Fq 'Test-ExactPathComponent $userPath $InstallDir' "$ROOT/install.ps1" || fail 'PowerShell saved PATH check is not component-based'
