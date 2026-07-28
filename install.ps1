@@ -146,15 +146,15 @@ function Install-ApisMcp {
   }
 
   $osDescription = [Environment]::OSVersion.VersionString
-  $isWindows = $env:OS -eq 'Windows_NT'
+  $runningOnWindows = $env:OS -eq 'Windows_NT'
   try {
-    $isWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)
+    $runningOnWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)
     $osDescription = [Runtime.InteropServices.RuntimeInformation]::OSDescription
     $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
   } catch {
     $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
   }
-  if (-not $isWindows) {
+  if (-not $runningOnWindows) {
     throw "Unsupported platform: OS=$osDescription, architecture=$architecture. This installer supports Windows."
   }
   $arch = switch -Regex ($architecture) {
