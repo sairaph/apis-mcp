@@ -179,6 +179,7 @@ function Install-ApisMcp {
   $suffix = "$PID.$([Guid]::NewGuid().ToString('N'))"
   $staged = Join-Path $InstallDir ".$Binary.new.$suffix"
   $manifest = Join-Path $InstallDir ".SHA256SUMS.txt.$suffix"
+  $backup = Join-Path $InstallDir ".$Binary.backup.$suffix"
   $client = $null
 
   try {
@@ -231,7 +232,7 @@ function Install-ApisMcp {
 
     try {
       if (Test-Path -LiteralPath $Target) {
-        [System.IO.File]::Replace($staged, $Target, $null, $true)
+        [System.IO.File]::Replace($staged, $Target, $backup, $true)
       } else {
         [System.IO.File]::Move($staged, $Target)
       }
@@ -286,7 +287,7 @@ function Install-ApisMcp {
     if ($null -ne $client) {
       try { $client.Dispose() } catch { $cleanupFailures += $_.Exception.Message }
     }
-    foreach ($temporaryPath in @($staged, $manifest)) {
+    foreach ($temporaryPath in @($staged, $manifest, $backup)) {
       if ($temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) {
         try {
           Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction Stop

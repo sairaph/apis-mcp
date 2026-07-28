@@ -71,6 +71,7 @@ try {
   Assert-True ($successOutput -notmatch 'HttpResponseMessage') 'HTTP response object leaked into installer output'
   Assert-True ($successOutput -match 'No interactive PowerShell host') 'noninteractive configuration guidance was missing'
   Assert-True ([System.IO.File]::ReadAllText($Target) -eq 'new fixture binary') 'successful upgrade did not replace the old binary'
+  Assert-True (-not (Get-ChildItem -LiteralPath (Split-Path -Parent $Target) -Filter '.apis-mcp.backup.*')) 'successful upgrade left a backup file behind'
   $Passed++
 
   $expectedError = $ErrorActionPreference
