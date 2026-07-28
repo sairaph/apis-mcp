@@ -9,6 +9,23 @@ permissions:
   contents: read
 
 jobs:
+  installer-powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test PowerShell installer
+        shell: pwsh
+        run: ./tests/installer_test.ps1
+
+  installer-unix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh tests/installer_test.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

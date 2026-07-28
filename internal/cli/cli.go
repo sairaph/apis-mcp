@@ -403,11 +403,19 @@ type Diagnostic struct {
 }
 
 func diagnose(runtime *bootstrap.Runtime, options Options) []Diagnostic {
+	if runtime == nil {
+		return []Diagnostic{{Name: "runtime", OK: false, Detail: "runtime is unavailable"}}
+	}
+	fingerprint := "unavailable"
+	if runtime.Library != nil {
+		fingerprint = runtime.Library.Fingerprint()
+	}
 	checks := []Diagnostic{
 		{Name: "configuration", OK: fileExists(runtime.Paths.Config), Detail: runtime.Paths.Config},
-		{Name: "library index", OK: runtime.Library != nil && runtime.Library.Fingerprint() != "", Detail: runtime.Library.Fingerprint()},
-		{Name: "cache", OK: directoryExists(runtime.Paths.Cache), Detail: runtime.Paths.Cache},
-		{Name: "sessions", OK: directoryExists(runtime.Paths.Sessions), Detail: runtime.Paths.Sessions},
+		{Name: "library index", OK: runtime.Library != nil && fingerprint != "", Detail: fingerprint},
+		{Name: "cache", OK: runtime.Cache != nil && directoryExists(runtime.Paths.Cache), Detail: runtime.Paths.Cache},
+		{Name: "sessions", OK: runtime.Sessions != nil && directoryExists(runtime.Paths.Sessions), Detail: runtime.Paths.Sessions},
+		{Name: "HTTP workspace", OK: runtime.HTTP != nil, Detail: "request service"},
 	}
 	executable := options.Executable
 	if executable == "" {

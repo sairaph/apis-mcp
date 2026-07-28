@@ -34,6 +34,12 @@ irm https://raw.githubusercontent.com/sairaph/apis-mcp/main/install.ps1 | iex
 
 Run `apis-mcp configure` again whenever you want to register newly installed AI
 clients. Run `apis-mcp` in a terminal to open the full-screen application.
+The installers resolve one concrete GitHub release, verify the selected binary
+against that release's `SHA256SUMS.txt`, and only then replace an existing
+installation. The Unix installer updates existing startup files for Bash, Zsh,
+Fish, and POSIX shells without creating a profile. If no supported shell
+profile or interactive terminal is available, the installers print the exact
+PATH or configuration command to run later instead of silently skipping setup.
 
 ## Documentation Library
 

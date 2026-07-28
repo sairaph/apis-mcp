@@ -85,30 +85,39 @@ func TestConfigureModelConfirmsAndRestoresDefaults(t *testing.T) {
 	paths := config.Paths{Root: root, Config: filepath.Join(root, "config.toml")}
 	cfg := config.Default()
 	cfg.RetentionHours = 99
-	m := newConfigureModel(context.Background(), Options{Executable: "/bin/apis-mcp"}, paths, cfg, nil)
+	runtime := &bootstrap.Runtime{Paths: paths, Config: cfg}
+	m := newRootModel(context.Background(), runtime, Options{Executable: "/bin/apis-mcp"}, contextSettings)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	m = updated.(configureModel)
-	if !m.confirm {
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if m.modal == nil || m.modal.yes {
 		t.Fatal("restore did not request confirmation")
 	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	m = updated.(configureModel)
-	if m.confirm || m.cfg.RetentionHours != 99 {
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if m.modal != nil || m.settings.cfg.RetentionHours != 99 {
 		t.Fatal("cancelled restore changed config")
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	m = updated.(configureModel)
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-	m = updated.(configureModel)
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	if cmd == nil {
 		t.Fatal("confirmed restore did not schedule a save")
 	}
-	updated, _ = m.Update(cmd())
-	m = updated.(configureModel)
-	if m.cfg.RetentionHours != config.Default().RetentionHours {
-		t.Fatalf("defaults were not restored: %+v", m.cfg)
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("restore command returned %T, want tea.BatchMsg", cmd())
+	}
+	for _, command := range batch {
+		if message := command(); message != nil {
+			if _, ok := message.(asyncMsg); ok {
+				m.Update(message)
+			}
+		}
+	}
+	if m.settings.cfg.RetentionHours != config.Default().RetentionHours {
+		t.Fatalf("defaults were not restored: %+v", m.settings.cfg)
+	}
+	if !m.configureSaved || m.settings.dirty || m.runErr != nil {
+		t.Fatalf("successful restore retained cancelled or failed state: saved=%t dirty=%t err=%v", m.configureSaved, m.settings.dirty, m.runErr)
 	}
 	loaded, err := config.Load(paths)
 	if err != nil {
