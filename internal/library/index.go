@@ -158,7 +158,13 @@ func openReadOnly(indexPath string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}).String()
+	uriPath := filepath.ToSlash(absolute)
+	if runtime.GOOS == "windows" && filepath.VolumeName(absolute) != "" && !strings.HasPrefix(uriPath, "//") {
+		// A drive-letter path is a file URL path, not an authority. The leading
+		// slash produces file:///C:/... instead of the invalid file://C:/....
+		uriPath = "/" + uriPath
+	}
+	uri := (&url.URL{Scheme: "file", Path: uriPath}).String()
 	db, err := sql.Open("sqlite", uri+"?mode=ro&immutable=1")
 	if err != nil {
 		return nil, err
