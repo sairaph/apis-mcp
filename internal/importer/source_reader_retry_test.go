@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"syscall"
 	"testing"
@@ -101,6 +103,33 @@ func TestSourceReaderRetries503ThenSucceeds(t *testing.T) {
 	}
 	if reader.used != int64(len("accepted")) {
 		t.Fatalf("used bytes = %d", reader.used)
+	}
+}
+
+func TestSourceReaderAllowedOriginRejectsUserinfoRedirect(t *testing.T) {
+	targetRequests := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/target" {
+			targetRequests++
+			fmt.Fprint(writer, "must not be reached")
+			return
+		}
+		location := strings.Replace(server.URL, "://", "://user:secret@", 1) + "/target"
+		http.Redirect(writer, request, location, http.StatusFound)
+	}))
+	defer server.Close()
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := newRetryTestReader(server.Client())
+	_, _, err = reader.readFromOrigin(context.Background(), server.URL+"/start", nil, httpOrigin(parsed))
+	if err == nil || !strings.Contains(err.Error(), "redirect URL must not contain credentials") {
+		t.Fatalf("userinfo redirect error = %v", err)
+	}
+	if targetRequests != 0 || reader.used != 0 {
+		t.Fatalf("target requests=%d used bytes=%d", targetRequests, reader.used)
 	}
 }
 

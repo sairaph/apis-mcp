@@ -74,6 +74,14 @@ func TestHTTPURLCanonicalizationNormalizesOriginsAndAliases(t *testing.T) {
 	if err != nil || canonical != "https://example.test/openapi.json?z=2&a=1" {
 		t.Fatalf("canonical URL = %q, %v", canonical, err)
 	}
+	for source, want := range map[string]string{
+		"http://[2001:db8::1]:80/openapi.json":  "http://[2001:db8::1]",
+		"https://[2001:db8::1]:443/schema.yaml": "https://[2001:db8::1]",
+	} {
+		if origin, err := NormalizedHTTPOrigin(source); err != nil || origin != want {
+			t.Errorf("origin %s = %q, %v; want %q", source, origin, err, want)
+		}
+	}
 }
 
 func TestCatalogPathsRejectDotSegments(t *testing.T) {

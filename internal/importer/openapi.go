@@ -88,7 +88,14 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 		return Result{}, errors.New("OpenAPI import requires API name and version")
 	}
 	reader := newSourceReader(options)
-	raw, provenance, err := reader.read(ctx, source, nil)
+	discoveredFramework := ""
+	var raw []byte
+	var provenance string
+	if options.OpenAPIInitialOrigin != "" {
+		raw, provenance, err = reader.readFromOrigin(ctx, source, nil, options.OpenAPIInitialOrigin)
+	} else {
+		raw, provenance, err = reader.read(ctx, source, nil)
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -114,6 +121,21 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 		}
 		candidates := openAPISpecCandidates(landing, base)
 		configScripts := openAPIConfigScripts(landing, base)
+		establishedFramework := detectOpenAPIHTMLFramework(landing)
+		if establishedFramework == "openapi-ui" {
+			scalar, scalarErr := resolveScalarSchema(ctx, landing, base, reader)
+			if scalarErr != nil {
+				return Result{}, scalarErr
+			}
+			if scalar.Proven {
+				if scalar.URL == "" {
+					return Result{}, scalarUnsupportedError()
+				}
+				candidates = []string{scalar.URL}
+				configScripts = nil
+				discoveredFramework = "scalar"
+			}
+		}
 		if len(candidates) == 0 && len(configScripts) == 0 {
 			return Result{}, errors.New("OpenAPI HTML page contains no discoverable specification URL")
 		}
@@ -121,7 +143,19 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 		found := false
 		tryCandidates := func(discovered []string) {
 			for _, candidate := range discovered {
-				candidateRaw, candidateSource, readErr := reader.read(ctx, candidate, base)
+				var candidateRaw []byte
+				var candidateSource string
+				var readErr error
+				if discoveredFramework == "scalar" {
+					candidateURL, parseErr := url.Parse(candidate)
+					if parseErr != nil || candidateURL.User != nil || candidateURL.Host == "" || candidateURL.Scheme != "http" && candidateURL.Scheme != "https" {
+						candidateErrors = append(candidateErrors, fmt.Errorf("invalid Scalar specification URL %q", candidate))
+						continue
+					}
+					candidateRaw, candidateSource, readErr = reader.readFromOrigin(ctx, candidate, base, httpOrigin(candidateURL))
+				} else {
+					candidateRaw, candidateSource, readErr = reader.read(ctx, candidate, base)
+				}
 				if readErr != nil {
 					candidateErrors = append(candidateErrors, readErr)
 					continue
@@ -162,7 +196,11 @@ func ImportOpenAPI(ctx context.Context, name, version, source string, options Op
 	if !hasAPIDescriptionOperations(document) {
 		return Result{}, errors.New("OpenAPI document has no path or webhook operations")
 	}
-	return importAPIDescription(ctx, name, version, document, kind, provenance, sourceCount, options)
+	result, err := importAPIDescription(ctx, name, version, document, kind, provenance, sourceCount, options)
+	if err == nil {
+		result.Framework = discoveredFramework
+	}
+	return result, err
 }
 
 func importAPIDescription(ctx context.Context, name, version string, document apiDescription, kind, provenance string, sources int, options Options) (Result, error) {

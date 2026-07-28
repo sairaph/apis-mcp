@@ -45,7 +45,7 @@ retired deployment is replaced with another independent public deployment.
 | Swagger 2 JSON/YAML | https://petstore.swagger.io/v2/swagger.json | https://generator.swagger.io/api/swagger.json | OpenAPI | complete |
 | Swagger UI | https://petstore.swagger.io/ | https://demo.netbox.dev/api/schema/swagger-ui/ | OpenAPI discovery | complete |
 | Redoc | https://redocly.github.io/redoc/ | https://demo.netbox.dev/api/schema/redoc/ | OpenAPI discovery | planned |
-| Scalar | https://docs.scalar.com/swagger-editor | https://galaxy.scalar.com/ | OpenAPI discovery | planned |
+| Scalar | https://tailscale.com/api-docs | https://galaxy.scalar.com/ | OpenAPI discovery | active |
 | Stoplight Elements | https://elements-demo.stoplight.io/ | https://docs.stoplight.io/ | OpenAPI discovery | planned |
 | RapiDoc | https://eu.api.ovh.com/console/ | https://www.goatcounter.com/api2.html | OpenAPI discovery / finite catalog | complete |
 | Fern | https://buildwithfern.com/learn | https://docs.cohere.com/ | OpenAPI endpoints / Markdown | planned |
@@ -462,6 +462,40 @@ following additional compatibility contracts:
 - Docusaurus leaf starts derive a non-root documentation section from static
   sidebar evidence and collapse slash aliases without crossing into unrelated
   site sections.
+
+## Targeted API Discovery Sweep
+
+Verified on 2026-07-27 against eight requested rendered documentation entry
+points. The original committed binary silently published incomplete generic
+HTML for seven entries: OpenRouter 14 pages, Stripe 570, Z.ai 72, Bootstrap 64,
+Brave Search 25, Tavily 9, and Tailscale 1. Tavily happened to cover its nine
+visible API-reference routes, but without discovering any authoritative
+inventory. Cloudflare alone failed closed before publication.
+
+Automatic ingestion now persists the detected framework and refuses before
+crawling whenever no complete importer is available. Explicit `apis-mcp import
+html` remains available for intentional best-effort use. Scalar is the first
+new discovery profile implemented from this sweep. Six API publishers expose
+complete OpenAPI alternatives that the existing engine can ingest directly;
+Bootstrap and Brave require documentation-specific profiles instead.
+
+| Target | Rendered entry result | Structured-source result | Next framework work |
+| --- | --- | --- | --- |
+| [OpenRouter](https://openrouter.ai/docs/api_reference/overview) | `mintlify`; refused, job `019fa5a9-48d0-7763-bdf1-13061e0ed9f1` | OpenAPI job `019fa590-da71-74cc-a370-6992bf84744e`: 89 operations + 713 schemas + overview = 803 | Mintlify sitemap, Markdown, and OpenAPI reconciliation |
+| [Stripe](https://docs.stripe.com/api) | `stripe-docs`; refused, job `019fa5a9-0e06-7b7c-944c-f51cc673a60b` | OpenAPI job `019fa590-e589-778e-88de-44a739024296`: 619 operations + 1,587 schemas + overview = 2,207 | Stripe Docs sitemap/Markdown profile with official OpenAPI |
+| [Cloudflare](https://developers.cloudflare.com/api/) | customized `astro-starlight`; refused, job `019fa5a9-0df4-7dda-ac0a-ac6b0eb4bd0a` | OpenAPI job `019fa590-d5a1-70b3-b1e9-617a71eca771`: 3,239 operations + 6,522 schemas + overview = 9,762 | Stainless API sitemap and per-route Markdown profile |
+| [Z.ai](https://docs.z.ai/guides/overview/quick-start) | `mintlify`; refused, job `019fa5a9-0e06-7cda-b348-f7cf04057fe8` | OpenAPI job `019fa590-e065-747c-8882-9287517851e3`: 14 operations + 58 schemas + overview = 73 | Mintlify |
+| [Bootstrap](https://getbootstrap.com/docs/5.3/getting-started/introduction/) | `astro`; refused, job `019fa5a9-cce7-7afd-8010-16e6f26ceeb5` | No public OpenAPI; 108 source-backed MDX documentation routes | Plain/source-backed Astro documentation profile |
+| [Brave Search](https://api-dashboard.search.brave.com/documentation) | `sveltekit`; refused, job `019fa5a8-df43-7ccc-89fd-4aafbb286437` | No public OpenAPI found; 40 serialized documentation/API-reference routes | Brave SvelteKit menu and SSR Markdown profile |
+| [Tavily Search](https://docs.tavily.com/documentation/api-reference/introduction) | `mintlify`; refused, job `019fa5a9-00fe-7e90-8efa-8a11bb1e4abd` | OpenAPI job `019fa590-c886-778c-aec0-d68b57aebb62`: 8 operations + 4 schemas + overview = 13 | Mintlify |
+| [Tailscale](https://tailscale.com/api-docs) | `scalar`; complete, job `019fa5eb-9aab-79cc-8f7a-d834c82f5873` | Automatically discovered OpenAPI: 90 operations + 38 schemas + overview = 129 | Validate Scalar against a second independent deployment |
+
+The implementation priority from this sweep is Mintlify first because it covers
+three targets and exposes finite sitemaps, per-page Markdown, `llms.txt`, and
+OpenAPI. Stainless is next because Cloudflare advertises an 18,367-route API
+sitemap with Markdown representations. Stripe Docs, Brave's custom SvelteKit
+application, and source-backed Astro require narrower publisher or framework
+profiles rather than permissive generic crawling.
 
 ## Completeness Rules
 

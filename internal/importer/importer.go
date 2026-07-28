@@ -63,6 +63,9 @@ type Options struct {
 	MaxTotalBytes  int64
 	MaxHTMLPages   int
 	MaxHTMLDepth   int
+	// OpenAPIInitialOrigin restricts redirects for the initial OpenAPI source.
+	// Automatic discovery uses this without changing external-reference scope.
+	OpenAPIInitialOrigin string
 }
 
 // Progress describes a durable ingestion progress update.
@@ -246,6 +249,12 @@ func normalizeOptions(options Options) (Options, error) {
 	if options.MaxSourceBytes < 1 || options.MaxTotalBytes < options.MaxSourceBytes {
 		return Options{}, errors.New("download limits must be positive and total must cover one source")
 	}
+	if options.OpenAPIInitialOrigin != "" {
+		origin, err := url.Parse(options.OpenAPIInitialOrigin)
+		if err != nil || origin.User != nil || origin.Scheme != "http" && origin.Scheme != "https" || origin.Host == "" || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" || httpOrigin(origin) != options.OpenAPIInitialOrigin {
+			return Options{}, errors.New("OpenAPI initial origin must be a normalized credential-free HTTP(S) origin")
+		}
+	}
 	if options.HTTPClient == nil {
 		options.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -312,6 +321,9 @@ func (reader *sourceReader) readFromOrigin(ctx context.Context, source string, b
 			clone.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return errors.New("stopped after 10 redirects")
+				}
+				if request.URL.User != nil {
+					return errors.New("redirect URL must not contain credentials")
 				}
 				if httpOrigin(request.URL) != allowedOrigin {
 					return fmt.Errorf("redirect changes origin from %s to %s", allowedOrigin, httpOrigin(request.URL))
@@ -471,6 +483,16 @@ func httpOrigin(parsed *url.URL) string {
 		return ""
 	}
 	return strings.ToLower(parsed.Scheme) + "://" + normalizedHTTPHost(parsed)
+}
+
+// NormalizedHTTPOrigin returns the credential-free normalized origin for an
+// HTTP(S) URL, including default-port and IPv6 normalization.
+func NormalizedHTTPOrigin(source string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(source))
+	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("source must be a credential-free HTTP(S) URL")
+	}
+	return httpOrigin(parsed), nil
 }
 
 func normalizedHTTPHost(parsed *url.URL) string {

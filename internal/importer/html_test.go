@@ -2,7 +2,9 @@ package importer
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -61,7 +63,7 @@ func TestDetectAstroStarlightGenerator(t *testing.T) {
 	}{
 		{generator: "Starlight v0.41.4", want: "astro-starlight"},
 		{generator: "Starlight v1.0.0-beta.1+build.2", want: "astro-starlight"},
-		{generator: "Astro v7.0.2"},
+		{generator: "Astro v7.0.2"}, // Detector-only; ImportHTML keeps its generic behavior.
 		{generator: "Starlight"},
 	} {
 		document, err := parseHTML([]byte(`<!doctype html><html><head><meta name="generator" content="` + test.generator + `"></head><body></body></html>`))
@@ -71,6 +73,60 @@ func TestDetectAstroStarlightGenerator(t *testing.T) {
 		if got := detectHTMLFramework(document); got != test.want {
 			t.Errorf("generator %q: got %q, want %q", test.generator, got, test.want)
 		}
+	}
+}
+
+func TestDetectUnsupportedHTMLFrameworkFixtures(t *testing.T) {
+	tests := []struct {
+		name      string
+		html      string
+		engine    string
+		framework string
+	}{
+		{name: "mintlify generator", html: `<meta name="generator" content="Mintlify"><main>Docs</main>`, engine: "html", framework: "mintlify"},
+		{name: "mintlify assets", html: `<script src="/_next/static/chunks/app.js"></script><script>window.__MINTLIFY_CONFIG__ = {}</script>`, engine: "html", framework: "mintlify"},
+		{name: "scalar element", html: `<scalar-api-reference configuration="{}"></scalar-api-reference>`, engine: "html", framework: "scalar"},
+		{name: "scalar package", html: `<script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>`, engine: "html", framework: "scalar"},
+		{name: "scalar configuration", html: `<script id="api-reference" type="application/json">{"openapi":"3.1.0"}</script><script src="/scalar.js"></script>`, engine: "html", framework: "scalar"},
+		{name: "scalar standard data URL", html: `<script id="api-reference" data-url="/openapi.json"></script>`, engine: "openapi", framework: "scalar"},
+		{name: "generic api-reference ID", html: `<script id="api-reference">{"url":"/openapi.json"}</script>`, engine: "html", framework: "unknown"},
+		{name: "astro", html: `<meta name="generator" content="Astro v5.13.5"><main>Docs</main>`, engine: "html", framework: "astro"},
+		{name: "sveltekit", html: `<body data-sveltekit-preload-data="hover"><script>window.__sveltekit_app = {}; import("/_app/immutable/entry/start.js")</script></body>`, engine: "html", framework: "sveltekit"},
+		{name: "stripe docs", html: `<link rel="stylesheet" href="https://b.stripecdn.com/docs-statics-srv/assets/sail.205757ec.css"><main class="Article--ApiReference">Docs</main>`, engine: "html", framework: "stripe-docs"},
+		{name: "starlight before astro", html: `<meta name="generator" content="Astro v5.13.5"><meta name="generator" content="Starlight v0.41.4"><div id="starlight__sidebar"></div>`, engine: "html", framework: "astro-starlight"},
+		{name: "docusaurus before product markers", html: `<meta name="generator" content="Docusaurus v3.8.1"><script src="/_mintlify/runtime.js"></script>`, engine: "html", framework: "docusaurus"},
+		{name: "nextra before next runtime", html: `<script src="/_next/static/chunks/app.js"></script><a id="nextra-skip-nav"></a><aside class="nextra-sidebar"></aside><main data-pagefind-body="true">Docs</main>`, engine: "html", framework: "nextra"},
+		{name: "openapi before astro runtime", html: `<meta name="generator" content="Astro v5.13.5"><script>SwaggerUIBundle({url: "/openapi.json"})</script>`, engine: "openapi", framework: "swagger-ui"},
+		{name: "swagger before scalar", html: `<scalar-api-reference></scalar-api-reference><script>SwaggerUIBundle({url: "/openapi.json"})</script>`, engine: "openapi", framework: "swagger-ui"},
+		{name: "rapidoc before scalar", html: `<scalar-api-reference></scalar-api-reference><rapi-doc spec-url="/openapi.json"></rapi-doc>`, engine: "openapi", framework: "rapidoc"},
+		{name: "redoc before scalar", html: `<scalar-api-reference></scalar-api-reference><redoc spec-url="/openapi.json"></redoc>`, engine: "openapi", framework: "redoc"},
+		{name: "arbitrary next", html: `<meta name="generator" content="Next.js"><script src="/_next/static/chunks/app.js"></script><main>Docs</main>`, engine: "html", framework: "unknown"},
+		{name: "single svelte marker", html: `<script src="/_app/immutable/entry/start.js"></script><main>Docs</main>`, engine: "html", framework: "unknown"},
+		{name: "incomplete stripe fingerprint", html: `<link rel="stylesheet" href="https://b.stripecdn.com/docs-statics-srv/app.css"><main class="api-reference">Docs</main>`, engine: "html", framework: "unknown"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(writer, `<!doctype html><html>`+test.html+`</html>`)
+			}))
+			defer server.Close()
+			detection, err := DetectURL(context.Background(), server.URL, Options{
+				LibraryRoot: t.TempDir(), Rebuild: func(context.Context) error { return nil }, HTTPClient: server.Client(),
+			})
+			if err != nil || detection.Engine != test.engine || detection.Framework != test.framework {
+				t.Fatalf("detection = %+v, %v; want engine %q framework %q", detection, err, test.engine, test.framework)
+			}
+			switch test.framework {
+			case "mintlify", "scalar", "astro", "sveltekit", "stripe-docs":
+				document, parseErr := parseHTML([]byte(`<!doctype html><html>` + test.html + `</html>`))
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+				if profile := detectHTMLFramework(document); profile != "" {
+					t.Fatalf("detector-only framework became ImportHTML profile %q", profile)
+				}
+			}
+		})
 	}
 }
 

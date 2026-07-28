@@ -263,6 +263,9 @@ func (store *jobStore) list() ([]ingestJob, error) {
 			continue
 		}
 		id := strings.TrimSuffix(entry.Name(), ".json")
+		if validateJobID(id) != nil {
+			continue
+		}
 		job, getErr := store.get(id)
 		if getErr != nil {
 			return nil, fmt.Errorf("read job %s: %w", id, getErr)
@@ -617,10 +620,18 @@ func runWorker(ctx context.Context, store *jobStore, id string, client *http.Cli
 		})
 	}
 	indexPath := filepath.Join(job.Request.Output, "library.sqlite")
+	maxSourceBytes := job.Request.MaxSourceBytes
+	if maxSourceBytes == 0 {
+		maxSourceBytes = importer.DefaultMaxSourceBytes
+	}
+	maxTotalBytes := job.Request.MaxTotalBytes
+	if maxTotalBytes == 0 {
+		maxTotalBytes = importer.DefaultMaxTotalBytes
+	}
 	options := importer.Options{
 		LibraryRoot: job.Request.Output, HTTPClient: client, Collections: job.Request.Collections, JobID: id,
 		HTMLScope: job.Request.Scope, HTMLLimitsSet: true, MaxHTMLPages: job.Request.MaxPages, MaxHTMLDepth: job.Request.MaxDepth, Progress: progress,
-		MaxSourceBytes: job.Request.MaxSourceBytes, MaxTotalBytes: job.Request.MaxTotalBytes,
+		MaxSourceBytes: maxSourceBytes, MaxTotalBytes: maxTotalBytes,
 		Rebuild: func(rebuildCtx context.Context) error {
 			progress(importer.Progress{Stage: "indexing", Pages: latestPages})
 			return library.Rebuild(rebuildCtx, library.Options{UserRoot: job.Request.Output, IndexPath: indexPath})
@@ -634,14 +645,40 @@ func runWorker(ctx context.Context, store *jobStore, id string, client *http.Cli
 			current.CurrentURL = detection.Source
 		})
 	}
+	if ingestErr == nil && detection.Engine == "html" && detection.Framework == "unknown" {
+		ingestErr = errors.New("automatic ingestion refused HTML with an unknown framework: generic anchor crawling has no finite completeness inventory; explicit `apis-mcp import html` remains available for intentional best-effort imports")
+	}
+	if ingestErr == nil && detection.Engine == "html" && !supportedHTMLFramework(detection.Framework) {
+		ingestErr = fmt.Errorf("automatic ingestion detected unsupported documentation framework %s; no complete importer is available", detection.Framework)
+	}
+	if ingestErr == nil {
+		remainingBytes := maxTotalBytes - detection.DownloadedBytes
+		if remainingBytes < 1 {
+			ingestErr = fmt.Errorf("detection consumed the %d-byte aggregate download limit", maxTotalBytes)
+		} else {
+			options.MaxTotalBytes = remainingBytes
+			options.MaxSourceBytes = min(maxSourceBytes, remainingBytes)
+		}
+	}
 	var result importer.Result
 	if ingestErr == nil {
-		switch detection.Engine {
-		case "openapi":
-			result, ingestErr = importer.ImportOpenAPI(workerCtx, job.Request.Name, job.Request.Version, job.Request.Source, options)
-		case "html":
+		importSource := job.Request.Source
+		if detection.Engine == "openapi" && detection.Framework == "scalar" {
+			importSource = detection.Source
+			schemaOrigin, originErr := importer.NormalizedHTTPOrigin(detection.Source)
+			if originErr != nil {
+				ingestErr = errors.New("detected Scalar schema has an invalid HTTP(S) URL")
+			} else {
+				options.OpenAPIInitialOrigin = schemaOrigin
+			}
+		}
+		switch {
+		case ingestErr != nil:
+		case detection.Engine == "openapi":
+			result, ingestErr = importer.ImportOpenAPI(workerCtx, job.Request.Name, job.Request.Version, importSource, options)
+		case detection.Engine == "html":
 			result, ingestErr = importer.ImportHTML(workerCtx, job.Request.Name, job.Request.Version, job.Request.Source, options)
-		case "docsify":
+		case detection.Engine == "docsify":
 			result, ingestErr = importer.ImportDocsify(workerCtx, job.Request.Name, job.Request.Version, job.Request.Source, options)
 		default:
 			ingestErr = fmt.Errorf("unsupported ingestion engine %q", detection.Engine)
@@ -696,6 +733,15 @@ func runWorker(ctx context.Context, store *jobStore, id string, client *http.Cli
 	}
 	_, err = store.finishCanceled(id, context.Canceled)
 	return err
+}
+
+func supportedHTMLFramework(framework string) bool {
+	switch framework {
+	case "docusaurus", "mkdocs-material", "mkdocs", "sphinx", "vitepress", "nextra", "astro-starlight", "mdbook":
+		return true
+	default:
+		return false
+	}
 }
 
 func (store *jobStore) finishSuccess(id string, result importer.Result) (ingestJob, bool, error) {
