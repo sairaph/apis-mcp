@@ -129,3 +129,4 @@ try {
 }
 
 Write-Host "PowerShell installer tests passed: $Passed"
+exit 0
