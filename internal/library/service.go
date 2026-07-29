@@ -162,13 +162,16 @@ func (s *Snapshot) Pages(ctx context.Context, request PagesRequest) (PagesResult
 	if err != nil {
 		return PagesResult{}, fmt.Errorf("%w: invalid path: %v", ErrInvalidArgument, err)
 	}
-	pages, err := s.pageRows(ctx, request.DocID)
+	pages, err := s.pageMetadataRows(ctx, request.DocID)
 	if err != nil {
 		return PagesResult{}, err
 	}
 	if selectedPath != "" {
 		found := false
 		for _, page := range pages {
+			if err := ctx.Err(); err != nil {
+				return PagesResult{}, err
+			}
 			if page.path == selectedPath || strings.HasPrefix(page.path, selectedPath+"/") {
 				found = true
 				break
@@ -186,6 +189,9 @@ func (s *Snapshot) Pages(ctx context.Context, request PagesRequest) (PagesResult
 	childCounts := make(map[string]int)
 	var directPages []Page
 	for _, candidate := range pages {
+		if err := ctx.Err(); err != nil {
+			return PagesResult{}, err
+		}
 		if candidate.path == selectedPath {
 			directPages = append(directPages, Page{
 				PageID: candidate.pageID, Title: candidate.title, Description: candidate.description,
@@ -212,6 +218,9 @@ func (s *Snapshot) Pages(ctx context.Context, request PagesRequest) (PagesResult
 	}
 	childPaths := make([]string, 0, len(childCounts))
 	for child := range childCounts {
+		if err := ctx.Err(); err != nil {
+			return PagesResult{}, err
+		}
 		childPaths = append(childPaths, child)
 	}
 	sort.Strings(childPaths)
@@ -232,6 +241,9 @@ func (s *Snapshot) Pages(ctx context.Context, request PagesRequest) (PagesResult
 		records = append(records, navigationRecord{page: &item})
 	}
 	window, pagination, err := paginate(records, pageNumber, s.listTokenBudget, func(records []navigationRecord) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		value := struct {
 			Paths []Path `yaml:"paths,omitempty"`
 			Pages []Page `yaml:"pages,omitempty"`
@@ -255,6 +267,120 @@ func (s *Snapshot) Pages(ctx context.Context, request PagesRequest) (PagesResult
 		} else {
 			result.Pages = append(result.Pages, *record.page)
 		}
+	}
+	return result, nil
+}
+
+// Browse returns one fixed-size hierarchy window. Its queries read only page
+// navigation metadata; page bodies and API operation metadata are left on disk.
+func (s *Snapshot) Browse(ctx context.Context, request BrowseRequest) (BrowseResult, error) {
+	if request.DocID == "" {
+		return BrowseResult{}, fmt.Errorf("%w: doc_id is required", ErrInvalidArgument)
+	}
+	selectedPath, err := canonicalPath(request.Path)
+	if err != nil {
+		return BrowseResult{}, fmt.Errorf("%w: invalid path: %v", ErrInvalidArgument, err)
+	}
+	if request.Offset < 0 {
+		return BrowseResult{}, fmt.Errorf("%w: offset must not be negative", ErrInvalidArgument)
+	}
+	if request.Limit == 0 {
+		request.Limit = DefaultBrowseLimit
+	}
+	if request.Limit < 1 || request.Limit > MaxBrowseLimit {
+		return BrowseResult{}, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidArgument, MaxBrowseLimit)
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM documents WHERE doc_id = ?", request.DocID).Scan(&exists); err != nil {
+		return BrowseResult{}, notFound(err, "document "+request.DocID)
+	}
+	if selectedPath != "" {
+		if err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1 FROM pages
+    WHERE doc_id = @doc_id
+      AND (path = @path OR substr(path, 1, length(@path) + 1) = @path || '/')
+)`, sql.Named("doc_id", request.DocID), sql.Named("path", selectedPath)).Scan(&exists); err != nil {
+			return BrowseResult{}, err
+		}
+		if exists == 0 {
+			return BrowseResult{}, fmt.Errorf("%w: path %q in %s", ErrNotFound, selectedPath, request.DocID)
+		}
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+WITH descendants AS (
+    SELECT CASE
+        WHEN @path = '' THEN path
+        ELSE substr(path, length(@path) + 2)
+    END AS remainder
+    FROM pages
+    WHERE doc_id = @doc_id
+      AND path <> @path
+      AND (@path = '' OR substr(path, 1, length(@path) + 1) = @path || '/')
+), children AS (
+    SELECT CASE
+        WHEN @path = '' THEN segment
+        ELSE @path || '/' || segment
+    END AS child
+    FROM (
+        SELECT CASE
+            WHEN instr(remainder, '/') = 0 THEN remainder
+            ELSE substr(remainder, 1, instr(remainder, '/') - 1)
+        END AS segment
+        FROM descendants
+        WHERE remainder <> ''
+    )
+), navigation AS (
+    SELECT 0 AS kind, child AS nav_path, count(*) AS nested_pages,
+           NULL AS page_id, NULL AS title, NULL AS description
+    FROM children
+    GROUP BY child
+    UNION ALL
+    SELECT 1 AS kind, '' AS nav_path, 0 AS nested_pages,
+           page_id, title, description
+    FROM pages
+    WHERE doc_id = @doc_id AND path = @path
+), totals AS (
+    SELECT count(*) AS total FROM navigation
+), window AS (
+    SELECT kind, nav_path, nested_pages, page_id, title, description
+    FROM navigation
+    ORDER BY kind, nav_path, lower(title), page_id
+    LIMIT @limit OFFSET @offset
+)
+SELECT window.kind, window.nav_path, window.nested_pages,
+       window.page_id, window.title, window.description, totals.total
+FROM totals
+LEFT JOIN window ON 1
+ORDER BY window.kind, window.nav_path, lower(window.title), window.page_id`,
+		sql.Named("doc_id", request.DocID), sql.Named("path", selectedPath),
+		sql.Named("limit", request.Limit), sql.Named("offset", request.Offset))
+	if err != nil {
+		return BrowseResult{}, err
+	}
+	defer rows.Close()
+	result := BrowseResult{DocID: request.DocID, Path: selectedPath, Offset: request.Offset}
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return BrowseResult{}, err
+		}
+		var kind, nested sql.NullInt64
+		var navigationPath, pageID, title, description sql.NullString
+		if err := rows.Scan(&kind, &navigationPath, &nested, &pageID, &title, &description, &result.Total); err != nil {
+			return BrowseResult{}, err
+		}
+		if !kind.Valid {
+			continue
+		}
+		if kind.Int64 == 0 {
+			result.Paths = append(result.Paths, Path{Path: navigationPath.String, NestedPages: int(nested.Int64)})
+		} else {
+			result.Pages = append(result.Pages, Page{PageID: pageID.String, Title: title.String, Description: description.String})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return BrowseResult{}, err
 	}
 	return result, nil
 }
@@ -337,13 +463,13 @@ FROM documents ORDER BY lower(name), version DESC, doc_id`)
 	return documents, rows.Err()
 }
 
-func (s *Snapshot) pageRows(ctx context.Context, docID string) ([]pageRow, error) {
+func (s *Snapshot) pageMetadataRows(ctx context.Context, docID string) ([]pageRow, error) {
 	var exists int
 	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM documents WHERE doc_id = ?", docID).Scan(&exists); err != nil {
 		return nil, notFound(err, "document "+docID)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT page_id, title, description, path, body, api_endpoints, operation_ids
+SELECT page_id, title, description, path
 FROM pages WHERE doc_id = ? ORDER BY page_id`, docID)
 	if err != nil {
 		return nil, err
@@ -351,19 +477,13 @@ FROM pages WHERE doc_id = ? ORDER BY page_id`, docID)
 	defer rows.Close()
 	var pages []pageRow
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var page pageRow
-		var endpoints, operations string
 		if err := rows.Scan(
-			&page.pageID, &page.title, &page.description, &page.path, &page.body, &endpoints, &operations,
+			&page.pageID, &page.title, &page.description, &page.path,
 		); err != nil {
-			return nil, err
-		}
-		page.apiEndpoints, err = decodeStrings(endpoints)
-		if err != nil {
-			return nil, err
-		}
-		page.operationIDs, err = decodeStrings(operations)
-		if err != nil {
 			return nil, err
 		}
 		pages = append(pages, page)

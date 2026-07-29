@@ -31,7 +31,8 @@ irm https://github.com/sairaph/apis-mcp/raw/main/install.ps1 | iex
 The installer downloads the right binary for your OS and architecture, puts
 `apis-mcp` on your `PATH`, then opens an interactive configurer. It detects your
 AI clients and lets you choose both which clients to connect and which API
-references to download. Run `apis-mcp configure` anytime to change either list.
+references to download, with live download, verification, and indexing status.
+Run `apis-mcp configure` anytime to change either list.
 
 > **After installing, open a new terminal.** The installer adds itself to your
 > `PATH`, but the terminal it ran in keeps the `PATH` it started with.
@@ -51,8 +52,9 @@ references to download. Run `apis-mcp configure` anytime to change either list.
 - **A capable HTTP workspace** - persistent response caching, UUIDv7 cookie
   sessions, retries, redirects, compressed responses, JSONPath previews, and
   background downloads.
-- **A CLI and full-screen app** - browse documentation, make requests, and
-  manage sessions outside an AI client.
+- **A terminal launcher, CLI, and full-screen workspace** - open APIs or
+  Configure from the launcher, browse documentation, make requests, and manage
+  sessions outside an AI client.
 - **Detects 13 AI clients** - configuration is safe to rerun and preserves
   other registered MCP servers.
 - **Single static binary** - one CGO-free Go binary for Linux, macOS, and
@@ -83,7 +85,13 @@ setup.
 Run `apis-mcp configure` whenever you want to change registered AI clients or
 installed API packs. The pack selector uses up to three columns; press `space`
 to toggle one API, `a` to select or clear all, and `r` to refresh the catalog.
-Run `apis-mcp` in a terminal to open the full-screen application.
+Applying a changed selection shows per-pack and overall progress through cache
+checks, downloads, verification, indexing, settings, and client registration.
+
+Run `apis-mcp` in a terminal to open the launcher. Choose `APIs` for the
+full-screen workspace or `Configure` for setup. Closing either returns to the
+launcher. Large documentation branches load in bounded windows; use `pgup` and
+`pgdn` or `[` and `]` to move between them.
 
 ## Documentation Library
 
@@ -139,6 +147,7 @@ apis-mcp rebuild
 ## CLI
 
 ```text
+apis-mcp
 apis-mcp collections
 apis-mcp list --name stripe
 apis-mcp pages DOC_ID --path payments

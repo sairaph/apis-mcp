@@ -255,7 +255,7 @@ func Parse(args []string) (Command, error) {
 	return command, nil
 }
 
-// Execute runs a parsed one-shot command or the full-screen app.
+// Execute runs a parsed one-shot command or the full-screen workspace.
 func Execute(ctx context.Context, runtime *bootstrap.Runtime, args []string, options Options) error {
 	command, err := Parse(args)
 	if err != nil {
@@ -476,7 +476,7 @@ func Help(version string) string {
 	return displayVersion(version) + `
 
 Usage:
-  apis-mcp                         open the full-screen terminal app
+  apis-mcp                         open the terminal launcher
   apis-mcp collections [--page N]
   apis-mcp list [--name TEXT] [--version VERSION] [--collection ID] [--page N]
   apis-mcp pages DOC_ID [--path PATH] [--page N]

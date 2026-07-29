@@ -82,6 +82,44 @@ func TestSetupCancellationCannotRenderCompletion(t *testing.T) {
 	}
 }
 
+func TestSetupRunResultWaitsForApplyWorker(t *testing.T) {
+	state := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), nil)
+	done := make(chan struct{})
+	state.packApplyDone = done
+	returned := make(chan error, 1)
+	go func() { returned <- setupRunResult(context.Background(), state, nil) }()
+	select {
+	case <-returned:
+		t.Fatal("setup returned before its apply worker stopped")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(done)
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("setup did not return after its apply worker stopped")
+	}
+}
+
+func TestSetupRunResultCancelsWorkerAfterProgramError(t *testing.T) {
+	state := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), nil)
+	workerCtx, cancel := context.WithCancel(context.Background())
+	state.packApplyStop = cancel
+	done := make(chan struct{})
+	state.packApplyDone = done
+	go func() {
+		<-workerCtx.Done()
+		close(done)
+	}()
+	programErr := errors.New("terminal input failed")
+	if err := setupRunResult(context.Background(), state, programErr); !errors.Is(err, programErr) {
+		t.Fatalf("setup program error = %v, want %v", err, programErr)
+	}
+	if workerCtx.Err() == nil {
+		t.Fatal("setup program error did not cancel its apply worker")
+	}
+}
+
 func TestSetupCannotSelectHiddenClients(t *testing.T) {
 	state := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), []install.Status{
 		{Client: install.Client{ID: "hidden", Name: "Hidden Client"}},
@@ -432,6 +470,287 @@ func TestSetupSummaryIncludesPackCountAndDownloadBytes(t *testing.T) {
 	}
 }
 
+func TestSetupApplyingRendersLivePackAndIndexProgress(t *testing.T) {
+	manager, err := docpacks.Open(t.TempDir(), docpacks.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack := setupTestCatalog(1).Packs[0]
+	state := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), nil)
+	state.packManager = manager
+	state.packCatalogOK = true
+	state.step = setupApplying
+	state.packApplyChanged = true
+	state.packApplyID = 7
+	state.packApplyOrder = []string{pack.ID}
+	state.packApplyEvents = map[string]docpacks.ApplyEvent{pack.ID: {
+		Stage: docpacks.ApplyStageWaiting, PackID: pack.ID, PackName: pack.Name,
+		PackBytesTotal: 1024, PreparedBytesTotal: 1024,
+	}}
+	if view := ansi.Strip(state.View()); !strings.Contains(view, "waiting") {
+		t.Fatalf("initial apply view did not show waiting pack:\n%s", view)
+	}
+	state.Update(setupApplyProgressMsg{id: 7, event: docpacks.ApplyEvent{
+		Stage: docpacks.ApplyStageReady, PackID: pack.ID, PackName: pack.Name, Cached: true,
+		PackBytesDone: 1024, PackBytesTotal: 1024, PreparedBytesDone: 1024, PreparedBytesTotal: 1024,
+	}})
+	if view := ansi.Strip(state.View()); !strings.Contains(view, "cached") {
+		t.Fatalf("cached apply view did not identify cache reuse:\n%s", view)
+	}
+
+	for _, test := range []struct {
+		stage  docpacks.ApplyStage
+		done   int64
+		wanted string
+	}{
+		{stage: docpacks.ApplyStageDownloading, done: 512, wanted: "downloading"},
+		{stage: docpacks.ApplyStageVerifying, done: 1024, wanted: "verifying"},
+	} {
+		state.Update(setupApplyProgressMsg{id: 7, event: docpacks.ApplyEvent{
+			Stage: test.stage, PackID: pack.ID, PackName: pack.Name,
+			PackBytesDone: test.done, PackBytesTotal: 1024,
+			PreparedBytesDone: test.done, PreparedBytesTotal: 1024,
+		}})
+		view := ansi.Strip(state.View())
+		for _, wanted := range []string{pack.Name, test.wanted, formatSetupBytes(test.done) + " / 1 KiB", "Prepared", "["} {
+			if !strings.Contains(view, wanted) {
+				t.Fatalf("%s apply view missing %q:\n%s", test.stage, wanted, view)
+			}
+		}
+	}
+
+	state.Update(setupApplyProgressMsg{id: 7, event: docpacks.ApplyEvent{
+		Stage: docpacks.ApplyStageReady, PackID: pack.ID, PackName: pack.Name,
+		PackBytesDone: 1024, PackBytesTotal: 1024, PreparedBytesDone: 1024, PreparedBytesTotal: 1024,
+	}})
+	state.Update(setupApplyProgressMsg{id: 7, event: docpacks.ApplyEvent{
+		Stage: docpacks.ApplyStageIndexing, PreparedBytesDone: 1024, PreparedBytesTotal: 1024,
+	}})
+	if view := ansi.Strip(state.View()); !strings.Contains(view, "Indexing documentation library") || !strings.Contains(view, "ready") {
+		t.Fatalf("indexing view did not separate indexing from downloads:\n%s", view)
+	}
+	state.packApplyOrder = nil
+	state.packApplyEvents = map[string]docpacks.ApplyEvent{}
+	state.packRemovalOnly = true
+	if view := ansi.Strip(state.View()); !strings.Contains(view, "removal-only rebuild") || !strings.Contains(view, "0 B / 0 B") {
+		t.Fatalf("removal-only apply view is unclear:\n%s", view)
+	}
+}
+
+func TestSetupApplyingRejectsStaleEventsAndResults(t *testing.T) {
+	state := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), nil)
+	state.step = setupApplying
+	state.packApplyID = 2
+	state.packApplyEvents = map[string]docpacks.ApplyEvent{"current": {
+		Stage: docpacks.ApplyStageDownloading, PackID: "current", PackName: "Current",
+		PackBytesDone: 10, PackBytesTotal: 100,
+	}}
+	state.Update(setupApplyProgressMsg{id: 1, event: docpacks.ApplyEvent{
+		Stage: docpacks.ApplyStageReady, PackID: "current", PackBytesDone: 100, PackBytesTotal: 100,
+	}})
+	state.Update(setupAppliedMsg{id: 1})
+	event := state.packApplyEvents["current"]
+	if state.step != setupApplying || state.saved || event.Stage != docpacks.ApplyStageDownloading || event.PackBytesDone != 10 {
+		t.Fatalf("stale apply messages changed current state: step=%d saved=%t event=%+v", state.step, state.saved, event)
+	}
+}
+
+func TestSetupUnchangedPacksSkipManagerApply(t *testing.T) {
+	pack, _ := setupDownloadablePack(t)
+	catalog := docpacks.Catalog{SchemaVersion: 1, Packs: []docpacks.Pack{pack}}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		http.Error(writer, "must not request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	manager, err := docpacks.Open(root, docpacks.Options{CatalogURL: server.URL + "/catalog.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(docpacks.ActiveState{SchemaVersion: 1, Packs: map[string]docpacks.Pack{pack.ID: pack}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "active.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := newSetupModelWithPacks(context.Background(), Options{}, config.Paths{}, config.Default(), nil, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.replacePackCatalog(catalog)
+	state.step = setupApplying
+	command := state.applySetup()
+	message := command()
+	phase, ok := message.(setupApplyPhaseMsg)
+	if !ok || phase.phase != setupApplySaving {
+		t.Fatalf("unchanged apply first message = %#v, want saving phase", message)
+	}
+	_, command = state.Update(message)
+	result := setupRunApplyCommand(t, state, command)
+	if result.err != nil || result.packs.changed || !result.packs.attempted || requests.Load() != 0 {
+		t.Fatalf("unchanged fast path result=%+v requests=%d", result, requests.Load())
+	}
+	if view := ansi.Strip(state.View()); !strings.Contains(view, "skipping archive verification") {
+		t.Fatalf("unchanged fast path view is unclear:\n%s", view)
+	}
+}
+
+func TestSetupApplyCancellationBoundary(t *testing.T) {
+	before := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), nil)
+	before.step, before.packApplyID = setupApplying, 1
+	before.packApplyCanStop = &atomic.Bool{}
+	before.packApplyCanStop.Store(true)
+	var beforeStops atomic.Int32
+	before.packApplyStop = func() { beforeStops.Add(1) }
+	before.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !before.cancelled || beforeStops.Load() != 1 || !strings.Contains(before.message, "Cancelling") {
+		t.Fatalf("pre-index cancellation = cancelled %t stops %d message %q", before.cancelled, beforeStops.Load(), before.message)
+	}
+
+	after := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), nil)
+	after.step, after.packApplyID = setupApplying, 2
+	after.packApplyPhase = setupApplyPublishing
+	after.packApplyCanStop = &atomic.Bool{}
+	var afterStops atomic.Int32
+	after.packApplyStop = func() { afterStops.Add(1) }
+	after.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if after.cancelled || afterStops.Load() != 0 || after.message != "Finishing safely; this stage cannot be cancelled." {
+		t.Fatalf("post-index ctrl+c = cancelled %t stops %d message %q", after.cancelled, afterStops.Load(), after.message)
+	}
+	if view := ansi.Strip(after.View()); !strings.Contains(view, after.message) || !strings.Contains(view, "Publishing API pack selection") {
+		t.Fatalf("safe finishing state not rendered:\n%s", view)
+	}
+	after.Update(setupAppliedMsg{id: 2})
+	if after.cancelled || !after.saved || after.step != setupDone {
+		t.Fatalf("published apply reported false cancellation: cancelled=%t saved=%t step=%d", after.cancelled, after.saved, after.step)
+	}
+}
+
+func TestSetupApplyWaitHandlesClosedChannelAndParentCancellation(t *testing.T) {
+	closed := make(chan tea.Msg)
+	close(closed)
+	if message := waitSetupApply(4, closed, context.Background())(); message != (setupApplyClosedMsg{id: 4}) {
+		t.Fatalf("closed apply channel message = %#v", message)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	open := make(chan tea.Msg)
+	if message := waitSetupApply(5, open, ctx)(); message != (setupApplyClosedMsg{id: 5}) {
+		t.Fatalf("cancelled parent wait message = %#v", message)
+	}
+	state := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), nil)
+	state.step, state.packApplyID = setupApplying, 4
+	state.Update(setupApplyClosedMsg{id: 4})
+	if state.step != setupDone || state.failure == nil {
+		t.Fatalf("unexpected worker closure was not handled: step=%d failure=%v", state.step, state.failure)
+	}
+}
+
+func TestSetupApplyingBoundsPackRowsAndRendersAllPhases(t *testing.T) {
+	manager, err := docpacks.Open(t.TempDir(), docpacks.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := newSetupModel(context.Background(), Options{}, config.Paths{}, config.Default(), nil)
+	state.packManager, state.packCatalogOK, state.packApplyChanged = manager, true, true
+	state.step, state.width, state.height = setupApplying, 50, 10
+	state.packApplyCanStop = &atomic.Bool{}
+	state.packApplyEvents = make(map[string]docpacks.ApplyEvent)
+	for index, pack := range setupTestCatalog(20).Packs {
+		state.packApplyOrder = append(state.packApplyOrder, pack.ID)
+		state.packApplyEvents[pack.ID] = docpacks.ApplyEvent{
+			Stage: docpacks.ApplyStageReady, PackID: pack.ID, PackName: pack.Name,
+			PackBytesDone: 1024, PackBytesTotal: 1024,
+			PreparedBytesDone: int64(index+1) * 1024, PreparedBytesTotal: 20 * 1024,
+		}
+	}
+	for phase, wanted := range map[setupApplyPhase]string{
+		setupApplyIndexing:    "Indexing documentation library",
+		setupApplyPublishing:  "Publishing API pack selection",
+		setupApplySaving:      "Saving settings",
+		setupApplyRegistering: "Registering clients",
+		setupApplyFinishing:   "Finishing setup",
+	} {
+		state.packApplyPhase = phase
+		view := ansi.Strip(state.View())
+		if len(strings.Split(view, "\n")) > state.height || !strings.Contains(view, "19 more packs") || !strings.Contains(view, "Prepared 20 KiB / 20 KiB") || !strings.Contains(view, wanted) {
+			t.Fatalf("bounded %d phase view is incomplete:\n%s", phase, view)
+		}
+		for _, line := range strings.Split(state.View(), "\n") {
+			if lipgloss.Width(line) > state.width {
+				t.Fatalf("applying line exceeds width %d: %q", state.width, ansi.Strip(line))
+			}
+		}
+	}
+}
+
+func TestSetupControlCDuringApplyWaitsForWorkerCleanup(t *testing.T) {
+	pack, _ := setupDownloadablePack(t)
+	catalog := docpacks.Catalog{SchemaVersion: 1, Packs: []docpacks.Pack{pack}}
+	requestStarted := make(chan struct{})
+	requestDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		close(requestStarted)
+		writer.WriteHeader(http.StatusOK)
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-request.Context().Done()
+		close(requestDone)
+	}))
+	defer server.Close()
+	manager, err := docpacks.Open(t.TempDir(), docpacks.Options{CatalogURL: server.URL + "/catalog.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	paths := config.Paths{Root: root, Config: filepath.Join(root, "config.toml")}
+	state, err := newSetupModelWithPacks(context.Background(), Options{}, paths, config.Default(), nil, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.replacePackCatalog(catalog)
+	state.packSelected[pack.ID] = true
+	state.settings.ListTokenBudget++
+	state.step = setupApplying
+	command := state.applySetup()
+	message := command()
+	_, command = state.Update(message)
+	select {
+	case <-requestStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply request did not start")
+	}
+	_, quit := state.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if quit != nil || state.step != setupApplying || !state.cancelled {
+		t.Fatalf("ctrl+c quit before cleanup: command=%v step=%d cancelled=%t", quit, state.step, state.cancelled)
+	}
+	for command != nil {
+		result := make(chan tea.Msg, 1)
+		go func(current tea.Cmd) { result <- current() }(command)
+		select {
+		case message = <-result:
+		case <-time.After(5 * time.Second):
+			t.Fatal("apply worker did not finish after cancellation")
+		}
+		_, command = state.Update(message)
+	}
+	select {
+	case <-requestDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP request remained active after setup quit")
+	}
+	if state.saved || state.step != setupApplying {
+		t.Fatalf("cancelled apply rendered completion: saved=%t step=%d", state.saved, state.step)
+	}
+	if _, err := os.Stat(paths.Config); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("settings were saved before cancellable pack preparation finished: %v", err)
+	}
+}
+
 func TestSetupPackApplyDownloadsRebuildsAndAllowsEmptySelection(t *testing.T) {
 	pack, archive := setupDownloadablePack(t)
 	catalog := docpacks.Catalog{SchemaVersion: 1, Packs: []docpacks.Pack{pack}}
@@ -464,7 +783,7 @@ func TestSetupPackApplyDownloadsRebuildsAndAllowsEmptySelection(t *testing.T) {
 	}
 	state.replacePackCatalog(catalog)
 	state.packSelected[pack.ID] = true
-	message := state.applySetup()().(setupAppliedMsg)
+	message := setupRunApplyCommand(t, state, state.applySetup())
 	if message.err != nil || !message.packs.attempted || message.packs.selected != 1 {
 		t.Fatalf("pack apply result = %+v, error %v", message.packs, message.err)
 	}
@@ -493,7 +812,7 @@ func TestSetupPackApplyDownloadsRebuildsAndAllowsEmptySelection(t *testing.T) {
 			t.Fatalf("unlisted pack view missing %q:\n%s", wanted, view)
 		}
 	}
-	message = preserved.applySetup()().(setupAppliedMsg)
+	message = setupRunApplyCommand(t, preserved, preserved.applySetup())
 	if message.err != nil || message.packs.selected != 1 || message.packs.changed {
 		t.Fatalf("partial catalog preservation apply = %+v, error %v", message.packs, message.err)
 	}
@@ -511,13 +830,13 @@ func TestSetupPackApplyDownloadsRebuildsAndAllowsEmptySelection(t *testing.T) {
 	if preserved.packCursor != 0 || preserved.focusedPack() == nil || preserved.focusedPack().ID != pack.ID {
 		t.Fatalf("empty catalog did not keep unlisted focus stable: cursor=%d focused=%+v", preserved.packCursor, preserved.focusedPack())
 	}
-	message = preserved.applySetup()().(setupAppliedMsg)
+	message = setupRunApplyCommand(t, preserved, preserved.applySetup())
 	active, err = manager.Active()
 	if message.err != nil || message.packs.changed || err != nil || len(active.Packs) != 1 || active.Packs[pack.ID].ID != pack.ID {
 		t.Fatalf("empty catalog silently changed active packs: result=%+v active=%+v errors=%v/%v", message.packs, active, message.err, err)
 	}
 	preserved.packSelected[pack.ID] = false
-	message = preserved.applySetup()().(setupAppliedMsg)
+	message = setupRunApplyCommand(t, preserved, preserved.applySetup())
 	if message.err != nil || !message.packs.attempted || message.packs.selected != 0 {
 		t.Fatalf("empty pack apply result = %+v, error %v", message.packs, message.err)
 	}
@@ -546,7 +865,7 @@ func TestSetupPackApplyFailureStopsClientRegistration(t *testing.T) {
 	state.packCatalog.SchemaVersion = 0
 	state.packCatalogOK = true
 	state.packSelected[state.packCatalog.Packs[0].ID] = true
-	message := state.applySetup()().(setupAppliedMsg)
+	message := setupRunApplyCommand(t, state, state.applySetup())
 	if message.err == nil || message.packs.err == nil {
 		t.Fatalf("invalid pack catalog unexpectedly applied: %+v", message)
 	}
@@ -609,4 +928,18 @@ func setupWriteFile(t *testing.T, name, content string) {
 
 func setupRuneKey(value string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
+}
+
+func setupRunApplyCommand(t *testing.T, state *setupModel, command tea.Cmd) setupAppliedMsg {
+	t.Helper()
+	state.step = setupApplying
+	for command != nil {
+		message := command()
+		if result, ok := message.(setupAppliedMsg); ok {
+			return result
+		}
+		_, command = state.Update(message)
+	}
+	t.Fatal("apply command ended without a result")
+	return setupAppliedMsg{}
 }

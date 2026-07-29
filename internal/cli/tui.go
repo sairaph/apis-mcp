@@ -873,23 +873,37 @@ func RunInteractive(ctx context.Context, runtime *bootstrap.Runtime, options Opt
 	}
 	options = normalizeOptions(options)
 	root := newModel(ctx, runtime, options)
-	program := newTeaProgram(root, options)
-	_, err := program.Run()
+	_, err := runTUIProgram(ctx, root, options, true)
 	root.close()
 	return err
 }
 
 func newTeaProgram(root *model, options Options) *tea.Program {
-	return tea.NewProgram(root, teaProgramOptions(root, options)...)
+	return newTUIProgram(root.ctx, root, options, true)
 }
 
 func teaProgramOptions(root *model, options Options) []tea.ProgramOption {
-	return []tea.ProgramOption{
-		tea.WithContext(root.ctx),
-		tea.WithAltScreen(),
+	return tuiProgramOptions(root.ctx, options, true)
+}
+
+func runTUIProgram(ctx context.Context, root tea.Model, options Options, alternateScreen bool) (tea.Model, error) {
+	return newTUIProgram(ctx, root, options, alternateScreen).Run()
+}
+
+func newTUIProgram(ctx context.Context, root tea.Model, options Options, alternateScreen bool) *tea.Program {
+	return tea.NewProgram(root, tuiProgramOptions(ctx, options, alternateScreen)...)
+}
+
+func tuiProgramOptions(ctx context.Context, options Options, alternateScreen bool) []tea.ProgramOption {
+	programOptions := []tea.ProgramOption{
+		tea.WithContext(ctx),
 		tea.WithInput(options.Stdin),
 		tea.WithOutput(options.Stdout),
 	}
+	if alternateScreen {
+		programOptions = append(programOptions, tea.WithAltScreen())
+	}
+	return programOptions
 }
 
 func displayPath(path string) string {

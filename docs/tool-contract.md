@@ -15,11 +15,13 @@ defaults, and configuration-dependent limits. MCP framing and lifecycle
 behavior are delegated to the SDK rather than implemented as a custom JSON-RPC
 transport.
 
-The binary has the same terminal-sensitive entrypoint model as `favro-mcp`.
-Bare invocation on a real stdin/stdout terminal opens the full interactive CLI
-application, including its human-oriented renderer and configuration screens.
-Bare invocation without a terminal runs the stdio MCP server for client
-compatibility. `apis-mcp mcp` always starts the stdio server explicitly.
+The binary has a terminal-sensitive entrypoint model. Bare invocation on a real
+stdin/stdout terminal opens a normal-screen launcher containing `APIs` and
+`Configure`. `APIs` opens the full interactive workspace, while `Configure`
+opens the inline setup flow; closing either returns to the launcher. The
+documentation runtime is opened only after `APIs` is selected. Bare invocation
+without a terminal runs the stdio MCP server for client compatibility.
+`apis-mcp mcp` always starts the stdio server explicitly.
 
 ## Installation And Runtime Model
 
@@ -48,10 +50,11 @@ sessions are shared through the per-user application data directory, while
 in-memory task ownership belongs to the specific MCP process that started the
 work.
 
-The full-screen CLI application and the inline setup flow are separate terminal
-programs. When setup is opened from inside the application, the application
-releases the terminal, runs setup, reloads affected state, and then resumes the
-full-screen application.
+The launcher, full-screen CLI application, and inline setup flow are separate
+terminal programs. The launcher uses the normal screen; the workspace uses the
+alternate screen. When setup is opened from inside the application, the
+application releases the terminal, runs setup, reloads affected state, and then
+resumes the full-screen application.
 
 ## Application Architecture
 
@@ -80,7 +83,10 @@ The first release uses the following local-first implementation defaults:
 - The setup flow refreshes the remote catalog on entry. Pack selection supports
   one, two, or three columns according to terminal width, and stages all changes
   until the final apply step. Failed downloads or index builds leave the prior
-  active set unchanged.
+  active set unchanged. Apply displays bounded per-pack and aggregate progress
+  for cache checks, downloads, verification, indexing, publication, settings,
+  and client registration. Cancellation is available during pack preparation;
+  once index publication begins, setup finishes the durable stages safely.
 - User document sets live under `~/.apis-mcp/library`. A user-defined API family
   replaces the matching official family as one unit; unrelated official packs
   remain available. Duplicate identities at the same precedence fail validation
@@ -109,6 +115,10 @@ The first release uses the following local-first implementation defaults:
 - Each MCP process pins one published library generation. Rebuilds become
   visible to new MCP processes and newly opened CLI operations, preserving
   pagination within a process.
+- Full-screen hierarchy navigation queries only page titles, descriptions,
+  paths, and identifiers. It loads fixed-size windows and leaves page bodies and
+  operation metadata on disk until search or read needs them. MCP
+  `apis_pages` keeps its token-budget pagination contract.
 - MCP results use text content containing YAML frontmatter and Markdown. The
   first release does not duplicate results through MCP `structuredContent`.
 - Cookie sessions use server-generated IDs without a separate naming layer.

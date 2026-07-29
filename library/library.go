@@ -18,11 +18,17 @@ var (
 	ErrNotFound        = internal.ErrNotFound
 )
 
+const (
+	DefaultBrowseLimit = internal.DefaultBrowseLimit
+	MaxBrowseLimit     = internal.MaxBrowseLimit
+)
+
 type (
 	Options            = internal.Options
 	CollectionsRequest = internal.CollectionsRequest
 	ListRequest        = internal.ListRequest
 	PagesRequest       = internal.PagesRequest
+	BrowseRequest      = internal.BrowseRequest
 	SearchRequest      = internal.SearchRequest
 	ReadRequest        = internal.ReadRequest
 	Pagination         = internal.Pagination
@@ -34,6 +40,7 @@ type (
 	Path               = internal.Path
 	Page               = internal.Page
 	PagesResult        = internal.PagesResult
+	BrowseResult       = internal.BrowseResult
 	SearchHit          = internal.SearchHit
 	SearchResult       = internal.SearchResult
 	ReadResult         = internal.ReadResult

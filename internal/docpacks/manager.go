@@ -23,6 +23,42 @@ import (
 
 const packLockRetryDelay = 10 * time.Millisecond
 
+const (
+	progressUpdateLimit   int64 = 100
+	progressUpdateMinimum int64 = 64 << 10
+)
+
+// ApplyStage identifies one transport-neutral step of preparing and publishing
+// an API pack selection.
+type ApplyStage string
+
+const (
+	ApplyStageWaiting       ApplyStage = "waiting"
+	ApplyStageCheckingCache ApplyStage = "checking-cache"
+	ApplyStageDownloading   ApplyStage = "downloading"
+	ApplyStageVerifying     ApplyStage = "verifying"
+	ApplyStageReady         ApplyStage = "ready"
+	ApplyStageIndexing      ApplyStage = "indexing"
+	ApplyStageApplying      ApplyStage = "applying"
+)
+
+// ApplyEvent is an immutable cumulative snapshot of apply progress. Pack fields
+// are empty for selection-wide stages such as indexing and applying.
+type ApplyEvent struct {
+	Stage              ApplyStage
+	PackID             string
+	PackName           string
+	PackBytesDone      int64
+	PackBytesTotal     int64
+	PreparedBytesDone  int64
+	PreparedBytesTotal int64
+	Cached             bool
+}
+
+// ApplyReporter receives cumulative progress snapshots. It is called
+// synchronously by Apply and must not retain mutable state owned by Manager.
+type ApplyReporter func(ApplyEvent)
+
 // Options configures a Manager. A nil HTTP client and empty catalog URL use
 // the production defaults.
 type Options struct {
@@ -135,7 +171,7 @@ func (m *Manager) ActiveArchives() ([]string, error) {
 // Apply validates a desired selection, prepares its blobs, rebuilds the next
 // library generation, and then atomically publishes the active state. A failed
 // rebuild leaves the prior active state unchanged.
-func (m *Manager) Apply(ctx context.Context, catalog Catalog, desiredIDs []string, rebuild RebuildFunc) error {
+func (m *Manager) Apply(ctx context.Context, catalog Catalog, desiredIDs []string, rebuild RebuildFunc, reporter ApplyReporter) error {
 	if rebuild == nil {
 		return errors.New("pack apply requires a rebuild callback")
 	}
@@ -154,6 +190,23 @@ func (m *Manager) Apply(ctx context.Context, catalog Catalog, desiredIDs []strin
 		}
 		next.Packs[id] = pack
 	}
+	ids := sortedPackIDs(next.Packs)
+	var preparedTotal int64
+	for _, id := range ids {
+		preparedTotal += next.Packs[id].Bytes
+	}
+	report := func(event ApplyEvent) {
+		if reporter != nil {
+			reporter(event)
+		}
+	}
+	for _, id := range ids {
+		pack := next.Packs[id]
+		report(ApplyEvent{
+			Stage: ApplyStageWaiting, PackID: pack.ID, PackName: pack.Name,
+			PackBytesTotal: pack.Bytes, PreparedBytesTotal: preparedTotal,
+		})
+	}
 
 	return m.withLock(ctx, func() error {
 		prior, _, err := m.readActive()
@@ -161,19 +214,37 @@ func (m *Manager) Apply(ctx context.Context, catalog Catalog, desiredIDs []strin
 			return err
 		}
 		nextArchives := make([]string, 0, len(next.Packs))
-		for _, id := range sortedPackIDs(next.Packs) {
-			archive, err := m.ensureBlob(ctx, next.Packs[id])
+		var prepared int64
+		for _, id := range ids {
+			pack := next.Packs[id]
+			packBase := prepared
+			reportPack := func(stage ApplyStage, done int64, cached bool) {
+				report(ApplyEvent{
+					Stage: stage, PackID: pack.ID, PackName: pack.Name,
+					PackBytesDone: done, PackBytesTotal: pack.Bytes,
+					PreparedBytesDone: packBase + done, PreparedBytesTotal: preparedTotal,
+					Cached: cached,
+				})
+			}
+			archive, cached, err := m.ensureBlob(ctx, pack, reportPack)
 			if err != nil {
 				return fmt.Errorf("prepare pack %s: %w", id, err)
 			}
 			nextArchives = append(nextArchives, archive)
+			prepared += pack.Bytes
+			reportPack(ApplyStageReady, pack.Bytes, cached)
 		}
 		if reflect.DeepEqual(prior, next) {
 			return nil
 		}
+		report(ApplyEvent{Stage: ApplyStageIndexing, PreparedBytesDone: prepared, PreparedBytesTotal: preparedTotal})
 		if err := rebuild(ctx, append([]string(nil), nextArchives...)); err != nil {
 			return fmt.Errorf("rebuild library with active packs: %w", err)
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		report(ApplyEvent{Stage: ApplyStageApplying, PreparedBytesDone: prepared, PreparedBytesTotal: preparedTotal})
 		return m.writeJSON("active.json", next)
 	})
 }
@@ -212,39 +283,51 @@ func (m *Manager) fetch(ctx context.Context, target string, limit int64) ([]byte
 	return raw, nil
 }
 
-func (m *Manager) ensureBlob(ctx context.Context, pack Pack) (string, error) {
+func (m *Manager) ensureBlob(ctx context.Context, pack Pack, report func(ApplyStage, int64, bool)) (string, bool, error) {
 	destination := m.blobPath(pack)
-	if err := verifyBlob(destination, pack); err == nil {
-		return destination, nil
+	report(ApplyStageCheckingCache, 0, false)
+	if info, err := os.Lstat(destination); err == nil && info.Mode().IsRegular() && info.Size() == pack.Bytes {
+		report(ApplyStageVerifying, 0, false)
+		if err := verifyBlobContext(ctx, destination, pack, func(done int64) {
+			report(ApplyStageVerifying, done, false)
+		}); err == nil {
+			return destination, true, nil
+		} else if ctx.Err() != nil {
+			return "", false, ctx.Err()
+		}
+		report(ApplyStageDownloading, 0, false)
+	} else {
+		report(ApplyStageDownloading, 0, false)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, siblingURL(m.catalogURL, pack.Asset), nil)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	response, err := m.client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("download pack asset: %w", err)
+		return "", false, fmt.Errorf("download pack asset: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download pack asset: unexpected HTTP status %s", response.Status)
+		return "", false, fmt.Errorf("download pack asset: unexpected HTTP status %s", response.Status)
 	}
 	if response.ContentLength >= 0 && response.ContentLength != pack.Bytes {
-		return "", fmt.Errorf("download pack asset: content length is %d, expected %d", response.ContentLength, pack.Bytes)
+		return "", false, fmt.Errorf("download pack asset: content length is %d, expected %d", response.ContentLength, pack.Bytes)
 	}
 
 	temporary, err := os.CreateTemp(m.blobs, ".blob-*.tmp")
 	if err != nil {
-		return "", fmt.Errorf("create temporary pack blob: %w", err)
+		return "", false, fmt.Errorf("create temporary pack blob: %w", err)
 	}
 	temporaryName := temporary.Name()
 	defer os.Remove(temporaryName)
 	if err := temporary.Chmod(0o600); err != nil {
 		temporary.Close()
-		return "", err
+		return "", false, err
 	}
 	hash := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(temporary, hash), io.LimitReader(response.Body, pack.Bytes+1))
+	progress := newProgressWriter(pack.Bytes, func(done int64) { report(ApplyStageDownloading, done, false) })
+	written, copyErr := io.Copy(io.MultiWriter(temporary, hash, progress), io.LimitReader(&contextReader{ctx: ctx, reader: response.Body}, pack.Bytes+1))
 	if copyErr == nil && written != pack.Bytes {
 		copyErr = fmt.Errorf("downloaded %d bytes, expected %d", written, pack.Bytes)
 	}
@@ -259,18 +342,61 @@ func (m *Manager) ensureBlob(ctx context.Context, pack Pack) (string, error) {
 	}
 	closeErr := temporary.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
-		return "", err
+		return "", false, err
 	}
-	if err := validateArchive(temporaryName, pack); err != nil {
-		return "", err
+	report(ApplyStageVerifying, pack.Bytes, false)
+	if err := validateArchiveContext(ctx, temporaryName, pack); err != nil {
+		return "", false, err
 	}
 	if err := fsx.Replace(temporaryName, destination); err != nil {
-		return "", fmt.Errorf("publish pack blob: %w", err)
+		return "", false, fmt.Errorf("publish pack blob: %w", err)
 	}
 	if err := syncDirectory(m.blobs); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return destination, nil
+	return destination, false, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(buffer)
+}
+
+type progressWriter struct {
+	total     int64
+	threshold int64
+	written   int64
+	reported  int64
+	report    func(int64)
+}
+
+func newProgressWriter(total int64, report func(int64)) *progressWriter {
+	threshold := max(progressUpdateMinimum, (total+progressUpdateLimit-1)/progressUpdateLimit)
+	return &progressWriter{total: total, threshold: threshold, report: report}
+}
+
+func (w *progressWriter) Write(buffer []byte) (int, error) {
+	w.written += int64(len(buffer))
+	w.Update(w.written)
+	return len(buffer), nil
+}
+
+func (w *progressWriter) Update(done int64) {
+	done = min(done, w.total)
+	if done < w.total && done-w.reported < w.threshold {
+		return
+	}
+	if done > w.reported {
+		w.reported = done
+		w.report(done)
+	}
 }
 
 func (m *Manager) readActive() (ActiveState, bool, error) {
@@ -377,8 +503,22 @@ func (m *Manager) writeJSON(base string, value any) error {
 }
 
 func (m *Manager) withLock(ctx context.Context, action func() error) (returnErr error) {
-	m.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("lock pack publication: %w", err)
+	}
+	for !m.mu.TryLock() {
+		timer := time.NewTimer(packLockRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("lock pack publication: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
 	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("lock pack publication: %w", err)
+	}
 	file := flock.New(filepath.Join(m.root, ".publish.lock"))
 	locked, err := file.TryLockContext(ctx, packLockRetryDelay)
 	if err != nil {

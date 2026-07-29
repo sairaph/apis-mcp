@@ -8,6 +8,8 @@ import (
 const (
 	defaultListTokenBudget = 2_000
 	defaultReadTokenBudget = 4_000
+	DefaultBrowseLimit     = 75
+	MaxBrowseLimit         = 100
 )
 
 var (
@@ -41,6 +43,16 @@ type PagesRequest struct {
 	DocID string `json:"doc_id" yaml:"doc_id"`
 	Path  string `json:"path,omitempty" yaml:"path,omitempty"`
 	Page  int    `json:"page,omitempty" yaml:"page,omitempty"`
+}
+
+// BrowseRequest selects a fixed navigation window without applying MCP token
+// pagination. Limit defaults to DefaultBrowseLimit and is capped at
+// MaxBrowseLimit.
+type BrowseRequest struct {
+	DocID  string `json:"doc_id" yaml:"doc_id"`
+	Path   string `json:"path,omitempty" yaml:"path,omitempty"`
+	Offset int    `json:"offset,omitempty" yaml:"offset,omitempty"`
+	Limit  int    `json:"limit,omitempty" yaml:"limit,omitempty"`
 }
 
 type SearchRequest struct {
@@ -109,6 +121,15 @@ type PagesResult struct {
 	Pagination `yaml:",inline"`
 	Paths      []Path `yaml:"paths,omitempty" json:"paths,omitempty"`
 	Pages      []Page `yaml:"pages,omitempty" json:"pages,omitempty"`
+}
+
+type BrowseResult struct {
+	DocID  string `json:"doc_id" yaml:"doc_id"`
+	Path   string `json:"path,omitempty" yaml:"path,omitempty"`
+	Offset int    `json:"offset" yaml:"offset"`
+	Total  int    `json:"total" yaml:"total"`
+	Paths  []Path `json:"paths,omitempty" yaml:"paths,omitempty"`
+	Pages  []Page `json:"pages,omitempty" yaml:"pages,omitempty"`
 }
 
 type SearchHit struct {

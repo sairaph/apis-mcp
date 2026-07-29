@@ -67,6 +67,87 @@ func TestDocumentationHierarchySearchReadAndBackContext(t *testing.T) {
 	}
 }
 
+func TestDocumentationBrowserUsesLazyWindows(t *testing.T) {
+	m := testRoot(t, contextDocumentation, nil)
+	m.docs.selected = documentChoice{name: "Cloudflare", version: library.APIVersion{DocID: "cloudflare-v1", Version: "v1"}}
+	var requests []library.BrowseRequest
+	m.docs.browse = func(_ context.Context, request library.BrowseRequest) (library.BrowseResult, error) {
+		requests = append(requests, request)
+		result := library.BrowseResult{DocID: request.DocID, Path: request.Path, Offset: request.Offset, Total: 180}
+		end := min(request.Offset+request.Limit, result.Total)
+		for index := request.Offset; index < end; index++ {
+			result.Pages = append(result.Pages, library.Page{PageID: fmt.Sprintf("schema-%03d", index), Title: fmt.Sprintf("Schema %03d", index)})
+		}
+		return result, nil
+	}
+
+	runTeaCommand(t, m, m.openDocumentPath("schemas"))
+	frame := m.docs.currentFrame()
+	if len(requests) != 1 || requests[0].Offset != 0 || requests[0].Limit != documentBrowserWindow {
+		t.Fatalf("initial open was not one bounded request: %+v", requests)
+	}
+	if frame.offset != 0 || frame.total != 180 || len(frame.entries) != documentBrowserWindow || frame.cursor != 0 {
+		t.Fatalf("unexpected initial browser frame: %+v", frame)
+	}
+	if view := strings.Join(m.viewDocumentBrowser(70, 15), "\n"); !strings.Contains(view, "items 1-75 of 180") {
+		t.Fatalf("browser omitted visible window status: %q", view)
+	}
+
+	_, cmd := m.Update(key("]"))
+	runTeaCommand(t, m, cmd)
+	frame = m.docs.currentFrame()
+	if len(requests) != 2 || requests[1].Offset != 75 || frame.offset != 75 || frame.cursor != 0 || frame.entries[0].page.PageID != "schema-075" {
+		t.Fatalf("next window did not preserve item coordinates: requests=%+v frame=%+v", requests, frame)
+	}
+
+	_, cmd = m.Update(key("["))
+	runTeaCommand(t, m, cmd)
+	frame = m.docs.currentFrame()
+	if len(requests) != 3 || requests[2].Offset != 0 || frame.offset != 0 || frame.cursor != documentBrowserWindow-1 {
+		t.Fatalf("previous window did not land at its trailing item: requests=%+v frame=%+v", requests, frame)
+	}
+}
+
+func TestCloudflareSizedHierarchyInitialOpenIsBounded(t *testing.T) {
+	root := t.TempDir()
+	writeTUIFixture(t, root, "cloudflare/v1/_index.md", "---\nname: Cloudflare API\nversion: v1\n---\n")
+	const pageCount = 2_000
+	body := strings.Repeat("schema body content that hierarchy navigation must not read\n", 32)
+	for index := 0; index < pageCount; index++ {
+		writeTUIFixture(t, root, fmt.Sprintf("cloudflare/v1/schemas/schema-%04d.md", index), fmt.Sprintf(
+			"---\ntitle: Schema %04d\ndescription: Schema metadata\n---\n\n# Schema %04d\n\n%s", index, index, body))
+	}
+	paths := config.Paths{Library: root, Index: t.TempDir(), Config: filepath.Join(t.TempDir(), "config.toml")}
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: filepath.Join(paths.Index, "library.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	m := testRoot(t, contextDocumentation, &bootstrap.Runtime{Paths: paths, Config: config.Default(), Library: snapshot})
+	m.docs.selected = documentChoice{name: "Cloudflare API", version: library.APIVersion{DocID: "cloudflare-api-v1", Version: "v1"}}
+	original := m.docs.browse
+	requests := 0
+	m.docs.browse = func(ctx context.Context, request library.BrowseRequest) (library.BrowseResult, error) {
+		requests++
+		if request.Offset != 0 || request.Limit != documentBrowserWindow {
+			t.Fatalf("unbounded initial request: %+v", request)
+		}
+		return original(ctx, request)
+	}
+
+	started := time.Now()
+	runTeaCommand(t, m, m.openDocumentPath("schemas"))
+	elapsed := time.Since(started)
+	frame := m.docs.currentFrame()
+	if requests != 1 || len(frame.entries) != documentBrowserWindow || frame.total != pageCount {
+		t.Fatalf("initial hierarchy open was eager: requests=%d entries=%d total=%d", requests, len(frame.entries), frame.total)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("bounded hierarchy open took %s; want under 3s", elapsed)
+	}
+	t.Logf("opened first %d of %d Cloudflare-shaped schema pages in %s", len(frame.entries), frame.total, elapsed)
+}
+
 func TestResponsiveViewsFitAndSwitchPaneCounts(t *testing.T) {
 	m, closeSnapshot := documentationFixture(t)
 	defer closeSnapshot()

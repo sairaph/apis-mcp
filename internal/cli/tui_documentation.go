@@ -14,6 +14,10 @@ import (
 	"github.com/sairaph/apis-mcp/library"
 )
 
+const documentBrowserWindow = library.DefaultBrowseLimit
+
+type documentBrowser func(context.Context, library.BrowseRequest) (library.BrowseResult, error)
+
 type documentationState struct {
 	snapshot *library.Snapshot
 	owned    bool
@@ -30,6 +34,7 @@ type documentationState struct {
 	frames   []documentFrame
 	reader   documentReader
 	importer *importForm
+	browse   documentBrowser
 }
 
 type documentChoice struct {
@@ -54,6 +59,8 @@ type documentFrame struct {
 	results      []library.SearchHit
 	resultCursor int
 	loading      bool
+	offset       int
+	total        int
 }
 
 type documentReader struct {
@@ -76,6 +83,8 @@ type importForm struct {
 type pagesPayload struct {
 	path    string
 	entries []documentEntry
+	offset  int
+	total   int
 }
 
 type reloadPayload struct {
@@ -90,6 +99,9 @@ func newDocumentationState(runtime *bootstrap.Runtime) *documentationState {
 	state := &documentationState{filter: filter}
 	if runtime != nil {
 		state.snapshot = runtime.Library
+		if runtime.Library != nil {
+			state.browse = runtime.Library.Browse
+		}
 	}
 	return state
 }
@@ -113,7 +125,7 @@ func (d *documentationState) close() {
 	if d.owned && d.snapshot != nil {
 		_ = d.snapshot.Close()
 	}
-	d.snapshot, d.owned = nil, false
+	d.snapshot, d.owned, d.browse = nil, false, nil
 }
 
 func (d *documentationState) resize(width, height int) {
@@ -295,6 +307,14 @@ func (m *model) updateDocumentBrowser(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if frame.focus == 1 && len(frame.results) > 0 {
 			frame.resultCursor = (frame.resultCursor + 1) % len(frame.results)
 		}
+	case "pgup", "[", "p":
+		if frame.focus == 0 && frame.offset > 0 {
+			return m, m.loadDocumentWindow(frame.path, max(0, frame.offset-documentBrowserWindow))
+		}
+	case "pgdown", "]", "n":
+		if frame.focus == 0 && frame.offset+len(frame.entries) < frame.total {
+			return m, m.loadDocumentWindow(frame.path, frame.offset+documentBrowserWindow)
+		}
 	case "enter":
 		if frame.focus == 1 {
 			if len(frame.results) > 0 {
@@ -324,39 +344,48 @@ func (m *model) openDocumentPath(path string) tea.Cmd {
 	search := newTextInput("search this path", "")
 	m.docs.frames = append(m.docs.frames, documentFrame{path: path, search: search, loading: true})
 	m.push(screenDocumentBrowser)
-	snapshot, docID := m.docs.snapshot, m.docs.selected.version.DocID
-	return m.startOperation("pages", "Opening documentation hierarchy", true, func(ctx context.Context, id int64) tea.Msg {
-		entries, err := loadAllPages(ctx, snapshot, docID, path)
-		return asyncMsg{id: id, kind: "pages", value: pagesPayload{path: path, entries: entries}, err: err}
-	})
+	return m.loadDocumentWindow(path, 0)
 }
 
-func loadAllPages(ctx context.Context, snapshot *library.Snapshot, docID, path string) ([]documentEntry, error) {
-	var entries []documentEntry
-	for page := 1; ; page++ {
-		result, err := snapshot.Pages(ctx, library.PagesRequest{DocID: docID, Path: path, Page: page})
-		if err != nil {
-			return nil, err
+func (m *model) loadDocumentWindow(path string, offset int) tea.Cmd {
+	browse, docID := m.docs.browse, m.docs.selected.version.DocID
+	return m.startOperation("pages", "Opening documentation hierarchy", true, func(ctx context.Context, id int64) tea.Msg {
+		if browse == nil {
+			return asyncMsg{id: id, kind: "pages", err: fmt.Errorf("documentation snapshot is unavailable")}
 		}
+		result, err := browse(ctx, library.BrowseRequest{
+			DocID: docID, Path: path, Offset: offset, Limit: documentBrowserWindow,
+		})
+		entries := make([]documentEntry, 0, len(result.Paths)+len(result.Pages))
 		for index := range result.Paths {
+			if err := ctx.Err(); err != nil {
+				return asyncMsg{id: id, kind: "pages", err: err}
+			}
 			item := result.Paths[index]
 			entries = append(entries, documentEntry{path: &item})
 		}
 		for index := range result.Pages {
+			if err := ctx.Err(); err != nil {
+				return asyncMsg{id: id, kind: "pages", err: err}
+			}
 			item := result.Pages[index]
 			entries = append(entries, documentEntry{page: &item})
 		}
-		if page >= result.TotalPages {
-			break
-		}
-	}
-	return entries, nil
+		return asyncMsg{id: id, kind: "pages", value: pagesPayload{
+			path: path, entries: entries, offset: result.Offset, total: result.Total,
+		}, err: err}
+	})
 }
 
 func (d *documentationState) applyPages(payload pagesPayload) {
 	frame := d.currentFrame()
+	previousOffset := frame.offset
 	frame.path, frame.entries, frame.loading = payload.path, payload.entries, false
+	frame.offset, frame.total = payload.offset, payload.total
 	frame.cursor = 0
+	if payload.offset < previousOffset && len(payload.entries) > 0 {
+		frame.cursor = len(payload.entries) - 1
+	}
 }
 
 func (m *model) searchDocumentCmd(query, path string) tea.Cmd {
@@ -482,7 +511,7 @@ func (m *model) applyReload(payload reloadPayload) {
 	if d.owned && d.snapshot != nil {
 		_ = d.snapshot.Close()
 	}
-	d.snapshot, d.owned = payload.snapshot, true
+	d.snapshot, d.owned, d.browse = payload.snapshot, true, payload.snapshot.Browse
 	d.collections, d.apis = payload.collections, payload.apis
 	d.frames, d.reader, d.importer = nil, documentReader{}, nil
 	d.collectionCursor, d.catalogCursor, d.focus = 0, 0, 1
@@ -690,7 +719,12 @@ func (m *model) viewDocumentCatalog(width, height int) []string {
 func (m *model) viewDocumentBrowser(width, height int) []string {
 	frame := m.docs.currentFrame()
 	navigation := []string{"  " + styleDim.Render(safeLine(m.documentationBreadcrumb()))}
-	start, end := visibleWindow(frame.cursor, len(frame.entries), max(1, height-3))
+	first, last := 0, 0
+	if len(frame.entries) > 0 {
+		first, last = frame.offset+1, frame.offset+len(frame.entries)
+	}
+	navigation = append(navigation, "  "+styleDim.Render(fmt.Sprintf("items %d-%d of %d", first, last, frame.total)))
+	start, end := visibleWindow(frame.cursor, len(frame.entries), max(1, height-4))
 	for index := start; index < end; index++ {
 		entry := frame.entries[index]
 		line := ""
@@ -794,7 +828,7 @@ func (m *model) documentationFooter() string {
 	case screenDocumentImport:
 		return "tab fields  type to edit  enter advance/run  esc back"
 	case screenDocumentBrowser:
-		return "tab panes  j/k navigate  enter open  s search  i import  r rebuild/reopen  esc back"
+		return "tab panes  j/k navigate  pgup/pgdn or [/] page  enter open  s search  i import  r rebuild  esc back"
 	default:
 		return "tab panes  j/k navigate  / filter  enter browse  i import  r rebuild/reopen  1-4 contexts  ? help  q quit"
 	}

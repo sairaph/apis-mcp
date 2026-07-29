@@ -2,6 +2,7 @@ package docpacks
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -36,6 +37,10 @@ func ValidateArchiveFile(name string, pack Pack) error {
 }
 
 func verifyBlob(name string, pack Pack) error {
+	return verifyBlobContext(context.Background(), name, pack, nil)
+}
+
+func verifyBlobContext(ctx context.Context, name string, pack Pack, progress func(int64)) error {
 	info, err := os.Lstat(name)
 	if err != nil {
 		return err
@@ -48,7 +53,11 @@ func verifyBlob(name string, pack Pack) error {
 		return err
 	}
 	hash := sha256.New()
-	_, copyErr := io.Copy(hash, file)
+	var destination io.Writer = hash
+	if progress != nil {
+		destination = io.MultiWriter(hash, newProgressWriter(pack.Bytes, progress))
+	}
+	_, copyErr := io.Copy(destination, &contextReader{ctx: ctx, reader: file})
 	closeErr := file.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
 		return err
@@ -56,10 +65,17 @@ func verifyBlob(name string, pack Pack) error {
 	if actual := hex.EncodeToString(hash.Sum(nil)); actual != pack.SHA256 {
 		return fmt.Errorf("pack SHA-256 is %s, expected %s", actual, pack.SHA256)
 	}
-	return validateArchive(name, pack)
+	return validateArchiveContext(ctx, name, pack)
 }
 
 func validateArchive(name string, pack Pack) error {
+	return validateArchiveContext(context.Background(), name, pack)
+}
+
+func validateArchiveContext(ctx context.Context, name string, pack Pack) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	reader, err := zip.OpenReader(name)
 	if err != nil {
 		return fmt.Errorf("open pack ZIP: %w", err)
@@ -78,6 +94,9 @@ func validateArchive(name string, pack Pack) error {
 	var uncompressed int64
 	pages := 0
 	for _, file := range reader.File {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := validateArchiveName(file, pack.ID, versions); err != nil {
 			return err
 		}
@@ -103,7 +122,7 @@ func validateArchive(name string, pack Pack) error {
 		var read int64
 		if isManifest {
 			limit := min(remaining, int64(maxManifestBytes))
-			raw, readErr := io.ReadAll(io.LimitReader(entry, limit+1))
+			raw, readErr := io.ReadAll(io.LimitReader(&contextReader{ctx: ctx, reader: entry}, limit+1))
 			read = int64(len(raw))
 			if readErr == nil && read > limit {
 				readErr = errors.New("manifest exceeds its byte limit")
@@ -116,7 +135,7 @@ func validateArchive(name string, pack Pack) error {
 				manifests[parts[1]] = true
 			}
 		} else {
-			read, err = io.Copy(io.Discard, io.LimitReader(entry, remaining+1))
+			read, err = io.Copy(io.Discard, io.LimitReader(&contextReader{ctx: ctx, reader: entry}, remaining+1))
 			if err == nil && read > remaining {
 				err = errors.New("pack ZIP exceeds its declared uncompressed size")
 			}

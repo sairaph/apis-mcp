@@ -87,7 +87,7 @@ func TestApplyDownloadsAndRemovesWithoutDeletingBlobs(t *testing.T) {
 		visible = append(visible, active)
 		return nil
 	}
-	if err := manager.Apply(context.Background(), refreshed, []string{pack.ID}, rebuild); err != nil {
+	if err := manager.Apply(context.Background(), refreshed, []string{pack.ID}, rebuild, nil); err != nil {
 		t.Fatal(err)
 	}
 	active, err := manager.Active()
@@ -114,7 +114,7 @@ func TestApplyDownloadsAndRemovesWithoutDeletingBlobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Apply(context.Background(), refreshed, []string{pack.ID}, rebuild); err != nil {
+	if err := manager.Apply(context.Background(), refreshed, []string{pack.ID}, rebuild, nil); err != nil {
 		t.Fatal(err)
 	}
 	afterNoop, err := os.Stat(activePath)
@@ -132,7 +132,7 @@ func TestApplyDownloadsAndRemovesWithoutDeletingBlobs(t *testing.T) {
 	if err := os.WriteFile(userFile, []byte("user"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Apply(context.Background(), refreshed, nil, rebuild); err != nil {
+	if err := manager.Apply(context.Background(), refreshed, nil, rebuild, nil); err != nil {
 		t.Fatal(err)
 	}
 	active, err = manager.Active()
@@ -150,6 +150,204 @@ func TestApplyDownloadsAndRemovesWithoutDeletingBlobs(t *testing.T) {
 	}
 }
 
+func TestApplyReportsStableMonotonicProgressAndCachedPacks(t *testing.T) {
+	alpha, alphaArchive := testPack(t, "alpha", "Alpha", "v1")
+	beta, betaArchive := testPack(t, "beta", "Beta", "v1")
+	catalog := Catalog{SchemaVersion: 1, Packs: []Pack{beta, alpha}}
+	assets := map[string][]byte{alpha.Asset: alphaArchive, beta.Asset: betaArchive}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		raw, ok := assets[strings.TrimPrefix(request.URL.Path, "/packs/")]
+		if !ok {
+			http.NotFound(writer, request)
+			return
+		}
+		requests.Add(1)
+		writer.Header().Set("Content-Type", "application/zip")
+		writer.WriteHeader(http.StatusOK)
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		for offset := 0; offset < len(raw); offset += 7 {
+			end := min(offset+7, len(raw))
+			_, _ = writer.Write(raw[offset:end])
+		}
+	}))
+	defer server.Close()
+	manager := openTestManager(t, server.URL+"/packs/catalog.json")
+
+	var events []ApplyEvent
+	if err := manager.Apply(context.Background(), catalog, []string{beta.ID, alpha.ID}, func(context.Context, []string) error {
+		if len(events) == 0 || events[len(events)-1].Stage != ApplyStageIndexing {
+			t.Fatalf("rebuild started before indexing event: %+v", events)
+		}
+		return nil
+	}, func(event ApplyEvent) {
+		events = append(events, event)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 || events[0].Stage != ApplyStageWaiting || events[0].PackID != alpha.ID || events[1].Stage != ApplyStageWaiting || events[1].PackID != beta.ID {
+		t.Fatalf("initial waiting events are not sorted: %+v", events)
+	}
+	total := alpha.Bytes + beta.Bytes
+	lastGlobal := int64(0)
+	lastPack := map[string]int64{}
+	stages := map[string]map[ApplyStage]bool{}
+	globalStages := map[ApplyStage]bool{}
+	downloadEvents := map[string]int{}
+	for _, event := range events {
+		if event.PreparedBytesTotal != total || event.PreparedBytesDone < lastGlobal || event.PreparedBytesDone > total {
+			t.Fatalf("non-monotonic global event after %d bytes: %+v", lastGlobal, event)
+		}
+		lastGlobal = event.PreparedBytesDone
+		if event.PackID == "" {
+			globalStages[event.Stage] = true
+			continue
+		}
+		if event.PackBytesDone < lastPack[event.PackID] || event.PackBytesDone > event.PackBytesTotal {
+			t.Fatalf("non-monotonic pack event after %d bytes: %+v", lastPack[event.PackID], event)
+		}
+		lastPack[event.PackID] = event.PackBytesDone
+		if event.Stage == ApplyStageDownloading {
+			downloadEvents[event.PackID]++
+		}
+		if stages[event.PackID] == nil {
+			stages[event.PackID] = map[ApplyStage]bool{}
+		}
+		stages[event.PackID][event.Stage] = true
+	}
+	if !globalStages[ApplyStageIndexing] || !globalStages[ApplyStageApplying] {
+		t.Fatalf("apply-wide stages = %v", globalStages)
+	}
+	for _, pack := range []Pack{alpha, beta} {
+		for _, stage := range []ApplyStage{ApplyStageWaiting, ApplyStageCheckingCache, ApplyStageDownloading, ApplyStageVerifying, ApplyStageReady} {
+			if !stages[pack.ID][stage] {
+				t.Fatalf("pack %s did not report %s: %+v", pack.ID, stage, events)
+			}
+		}
+		if downloadEvents[pack.ID] > int(progressUpdateLimit)+2 {
+			t.Fatalf("pack %s emitted %d uncoalesced download events", pack.ID, downloadEvents[pack.ID])
+		}
+	}
+	if lastGlobal != total || requests.Load() != 2 {
+		t.Fatalf("prepared bytes/requests = %d/%d, want %d/2", lastGlobal, requests.Load(), total)
+	}
+
+	events = nil
+	rebuilds := 0
+	if err := manager.Apply(context.Background(), catalog, []string{alpha.ID}, func(context.Context, []string) error {
+		rebuilds++
+		return nil
+	}, func(event ApplyEvent) { events = append(events, event) }); err != nil {
+		t.Fatal(err)
+	}
+	ready := 0
+	verified := map[string]bool{}
+	for _, event := range events {
+		if event.Stage == ApplyStageVerifying && event.PackBytesDone > 0 {
+			if event.PackBytesDone > event.PackBytesTotal {
+				t.Fatalf("cached verifying event exceeds total: %+v", event)
+			}
+			verified[event.PackID] = true
+		}
+		if event.Stage == ApplyStageReady {
+			ready++
+			if !event.Cached || event.PackBytesDone != event.PackBytesTotal {
+				t.Fatalf("cached ready event = %+v", event)
+			}
+		}
+	}
+	if ready != 1 || len(verified) != 1 || rebuilds != 1 || requests.Load() != 2 {
+		t.Fatalf("changed cached apply ready/verified/rebuild/download counts = %d/%d/%d/%d", ready, len(verified), rebuilds, requests.Load())
+	}
+}
+
+func TestApplyCancellationInterruptsManagerLockWait(t *testing.T) {
+	pack, _ := testPack(t, "alpha", "Alpha", "v1")
+	manager := openTestManager(t, "https://example.com/packs/catalog.json")
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	waiting := make(chan struct{})
+	go func() {
+		done <- manager.Apply(ctx, Catalog{SchemaVersion: 1, Packs: []Pack{pack}}, []string{pack.ID}, func(context.Context, []string) error { return nil }, func(event ApplyEvent) {
+			if event.Stage == ApplyStageWaiting {
+				close(waiting)
+			}
+		})
+	}()
+	<-waiting
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("lock cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("manager lock wait ignored cancellation")
+	}
+}
+
+func TestApplyCancellationStopsDownloadAndCleansTemporaryBlob(t *testing.T) {
+	pack, archive := testPack(t, "alpha", "Alpha", "v1")
+	pack.Bytes += 1 << 20
+	pack.SHA256 = strings.Repeat("0", 64)
+	pack.Asset = pack.ID + "-" + pack.SHA256 + ".zip"
+	catalog := Catalog{SchemaVersion: 1, Packs: []Pack{pack}}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = writer.Write(archive)
+		_, _ = writer.Write(make([]byte, progressUpdateMinimum))
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+	manager := openTestManager(t, server.URL+"/packs/catalog.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	copied := make(chan struct{})
+	var reported atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.Apply(ctx, catalog, []string{pack.ID}, func(context.Context, []string) error { return nil }, func(event ApplyEvent) {
+			if event.Stage == ApplyStageDownloading && event.PackBytesDone > 0 && reported.CompareAndSwap(false, true) {
+				close(copied)
+			}
+		})
+	}()
+	select {
+	case <-copied:
+		cancel()
+	case <-time.After(5 * time.Second):
+		t.Fatal("download copy did not report progress")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled apply error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled apply did not stop promptly")
+	}
+	entries, err := os.ReadDir(manager.blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("cancelled apply left blob files: %v", entries)
+	}
+	active, err := manager.Active()
+	if err != nil || len(active.Packs) != 0 {
+		t.Fatalf("cancelled apply published state: %+v, %v", active, err)
+	}
+}
+
 func TestApplyRejectsSHAMismatch(t *testing.T) {
 	pack, archive := testPack(t, "alpha", "Alpha", "v1")
 	pack.SHA256 = strings.Repeat("0", 64)
@@ -161,7 +359,7 @@ func TestApplyRejectsSHAMismatch(t *testing.T) {
 	err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error {
 		t.Fatal("rebuild called for invalid blob")
 		return nil
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("SHA mismatch error = %v", err)
 	}
@@ -189,7 +387,7 @@ func TestApplyRejectsMalformedAndTraversalZIPs(t *testing.T) {
 			server := packServer(t, catalog, map[string][]byte{pack.Asset: test.archive}, nil)
 			defer server.Close()
 			manager := openTestManager(t, server.URL+"/packs/catalog.json")
-			err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error { return nil })
+			err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error { return nil }, nil)
 			if err == nil {
 				t.Fatal("invalid ZIP was accepted")
 			}
@@ -204,7 +402,7 @@ func TestApplyRebuildFailureLeavesPriorStateUnchanged(t *testing.T) {
 	server := packServer(t, catalog, map[string][]byte{alpha.Asset: alphaArchive, beta.Asset: betaArchive}, nil)
 	defer server.Close()
 	manager := openTestManager(t, server.URL+"/packs/catalog.json")
-	if err := manager.Apply(context.Background(), catalog, []string{alpha.ID}, func(context.Context, []string) error { return nil }); err != nil {
+	if err := manager.Apply(context.Background(), catalog, []string{alpha.ID}, func(context.Context, []string) error { return nil }, nil); err != nil {
 		t.Fatal(err)
 	}
 	activePath := filepath.Join(manager.root, "active.json")
@@ -225,7 +423,7 @@ func TestApplyRebuildFailureLeavesPriorStateUnchanged(t *testing.T) {
 			return fmt.Errorf("active state changed before rebuild: %+v", visible)
 		}
 		return rebuildFailure
-	})
+	}, nil)
 	if !errors.Is(err, rebuildFailure) {
 		t.Fatalf("Apply error = %v", err)
 	}
@@ -251,7 +449,7 @@ func TestApplyRepairsOrRemovesCorruptPriorBlob(t *testing.T) {
 		server := packServer(t, catalog, map[string][]byte{pack.Asset: archive}, &requests)
 		defer server.Close()
 		manager := openTestManager(t, server.URL+"/packs/catalog.json")
-		if err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error { return nil }); err != nil {
+		if err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error { return nil }, nil); err != nil {
 			t.Fatal(err)
 		}
 		activePath := filepath.Join(manager.root, "active.json")
@@ -267,10 +465,11 @@ func TestApplyRepairsOrRemovesCorruptPriorBlob(t *testing.T) {
 			t.Fatal(err)
 		}
 		callbacks := 0
+		var events []ApplyEvent
 		if err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error {
 			callbacks++
 			return nil
-		}); err != nil {
+		}, func(event ApplyEvent) { events = append(events, event) }); err != nil {
 			t.Fatal(err)
 		}
 		after, err := os.Stat(activePath)
@@ -279,6 +478,19 @@ func TestApplyRepairsOrRemovesCorruptPriorBlob(t *testing.T) {
 		}
 		if callbacks != 0 || requests.Load() != 2 || !after.ModTime().Equal(before.ModTime()) {
 			t.Fatalf("repair was not a metadata no-op: callbacks=%d requests=%d", callbacks, requests.Load())
+		}
+		downloadStarted := false
+		for _, event := range events {
+			if event.Stage != ApplyStageDownloading {
+				continue
+			}
+			if !downloadStarted && event.PackBytesDone != 0 {
+				t.Fatalf("replacement download started at %d bytes: %+v", event.PackBytesDone, events)
+			}
+			downloadStarted = true
+		}
+		if !downloadStarted {
+			t.Fatalf("replacement download progress was not reported: %+v", events)
 		}
 		if _, err := manager.ActiveArchives(); err != nil {
 			t.Fatalf("repaired pack is invalid: %v", err)
@@ -289,7 +501,7 @@ func TestApplyRepairsOrRemovesCorruptPriorBlob(t *testing.T) {
 		server := packServer(t, catalog, map[string][]byte{pack.Asset: archive}, nil)
 		defer server.Close()
 		manager := openTestManager(t, server.URL+"/packs/catalog.json")
-		if err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error { return nil }); err != nil {
+		if err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error { return nil }, nil); err != nil {
 			t.Fatal(err)
 		}
 		blob := manager.blobPath(pack)
@@ -307,7 +519,7 @@ func TestApplyRepairsOrRemovesCorruptPriorBlob(t *testing.T) {
 				t.Fatalf("prior state was not visible during rebuild: %+v, %v", visible, err)
 			}
 			return nil
-		}); err != nil {
+		}, nil); err != nil {
 			t.Fatal(err)
 		}
 		active, err := manager.Active()

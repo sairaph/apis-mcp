@@ -224,7 +224,7 @@ func TestOpenLoadsActivePacksWithoutRefreshing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error { return nil }); err != nil {
+	if err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error { return nil }, nil); err != nil {
 		t.Fatal(err)
 	}
 	server.Close()
@@ -244,7 +244,7 @@ func TestOpenLoadsActivePacksWithoutRefreshing(t *testing.T) {
 	if options := runtime.LibraryOptions(); len(options.PackArchives) != 1 || filepath.Base(options.PackArchives[0]) != pack.SHA256+".zip" {
 		t.Fatalf("runtime library options = %+v", options)
 	}
-	if err := manager.Apply(context.Background(), catalog, nil, func(context.Context, []string) error { return nil }); err != nil {
+	if err := manager.Apply(context.Background(), catalog, nil, func(context.Context, []string) error { return nil }, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := runtime.RebuildLibrary(context.Background()); err != nil {

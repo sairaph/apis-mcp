@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -67,10 +68,34 @@ type setupPackApplyResult struct {
 }
 
 type setupAppliedMsg struct {
+	id      int
 	results []clientApplyResult
 	packs   setupPackApplyResult
 	err     error
 }
+
+type setupApplyProgressMsg struct {
+	id    int
+	event docpacks.ApplyEvent
+}
+
+type setupApplyPhase int
+
+const (
+	setupApplyPreparing setupApplyPhase = iota
+	setupApplyIndexing
+	setupApplyPublishing
+	setupApplySaving
+	setupApplyRegistering
+	setupApplyFinishing
+)
+
+type setupApplyPhaseMsg struct {
+	id    int
+	phase setupApplyPhase
+}
+
+type setupApplyClosedMsg struct{ id int }
 
 type setupModel struct {
 	ctx     context.Context
@@ -91,20 +116,31 @@ type setupModel struct {
 	width            int
 	height           int
 
-	packManager     *docpacks.Manager
-	packActive      map[string]docpacks.Pack
-	packSelected    map[string]bool
-	packUnlisted    map[string]bool
-	packCatalog     docpacks.Catalog
-	packCatalogOK   bool
-	packLoading     bool
-	packError       error
-	packMessage     string
-	packRefreshID   int
-	packRefreshStop context.CancelFunc
-	packCursor      int
-	packScrollRow   int
-	packApplyResult setupPackApplyResult
+	packManager      *docpacks.Manager
+	packActive       map[string]docpacks.Pack
+	packSelected     map[string]bool
+	packUnlisted     map[string]bool
+	packCatalog      docpacks.Catalog
+	packCatalogOK    bool
+	packLoading      bool
+	packError        error
+	packMessage      string
+	packRefreshID    int
+	packRefreshStop  context.CancelFunc
+	packCursor       int
+	packScrollRow    int
+	packApplyResult  setupPackApplyResult
+	packApplyEvents  map[string]docpacks.ApplyEvent
+	packApplyOrder   []string
+	packApplyStage   docpacks.ApplyStage
+	packApplyID      int
+	packApplyStop    context.CancelFunc
+	packApplyDone    <-chan struct{}
+	packApplyUpdates <-chan tea.Msg
+	packApplyCanStop *atomic.Bool
+	packApplyPhase   setupApplyPhase
+	packApplyChanged bool
+	packRemovalOnly  bool
 
 	results   []clientApplyResult
 	message   string
@@ -139,6 +175,12 @@ func RunConfigure(ctx context.Context, options Options) error {
 }
 
 func setupRunResult(ctx context.Context, state *setupModel, programErr error) error {
+	if programErr != nil && state.packApplyStop != nil {
+		state.packApplyStop()
+	}
+	if state.packApplyDone != nil {
+		<-state.packApplyDone
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -205,10 +247,60 @@ func (m *setupModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case setupAppliedMsg:
+		if message.id != m.packApplyID {
+			return m, nil
+		}
+		m.packApplyStop = nil
+		m.packApplyUpdates = nil
+		if m.cancelled {
+			return m, tea.Quit
+		}
 		m.results, m.packApplyResult, m.failure, m.saved, m.step = message.results, message.packs, message.err, message.err == nil, setupDone
+		return m, nil
+	case setupApplyProgressMsg:
+		if message.id != m.packApplyID || m.step != setupApplying {
+			return m, nil
+		}
+		m.packApplyStage = message.event.Stage
+		if message.event.Stage == docpacks.ApplyStageIndexing {
+			m.packApplyPhase = setupApplyIndexing
+		} else if message.event.Stage == docpacks.ApplyStageApplying {
+			m.packApplyPhase = setupApplyPublishing
+		}
+		if message.event.PackID != "" {
+			m.packApplyEvents[message.event.PackID] = message.event
+		}
+		return m, waitSetupApply(m.packApplyID, m.packApplyUpdates, m.ctx)
+	case setupApplyPhaseMsg:
+		if message.id != m.packApplyID || m.step != setupApplying {
+			return m, nil
+		}
+		m.packApplyPhase = message.phase
+		return m, waitSetupApply(m.packApplyID, m.packApplyUpdates, m.ctx)
+	case setupApplyClosedMsg:
+		if message.id != m.packApplyID {
+			return m, nil
+		}
+		m.packApplyStop = nil
+		m.packApplyUpdates = nil
+		if m.cancelled || m.ctx.Err() != nil {
+			return m, tea.Quit
+		}
+		m.failure = errors.New("configuration apply worker ended without a result")
+		m.step = setupDone
 		return m, nil
 	case tea.KeyMsg:
 		if message.String() == "ctrl+c" {
+			if m.step == setupApplying && m.packApplyStop != nil {
+				if m.packApplyCanStop != nil && m.packApplyCanStop.CompareAndSwap(true, false) {
+					m.cancelled = true
+					m.message = "Cancelling; waiting for safe cleanup…"
+					m.packApplyStop()
+				} else {
+					m.message = "Finishing safely; this stage cannot be cancelled."
+				}
+				return m, nil
+			}
 			m.cancelled = true
 			return m, tea.Quit
 		}
@@ -405,6 +497,7 @@ func (m *setupModel) updateSetupSettings(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *setupModel) applySetup() tea.Cmd {
 	paths, cfg := m.paths, m.settings
+	originalSettings := m.originalSettings
 	clients := append([]install.Status(nil), m.clients...)
 	selected := append([]bool(nil), m.selected...)
 	manager, catalog, catalogOK := m.packManager, m.packCatalog, m.packCatalogOK
@@ -412,15 +505,67 @@ func (m *setupModel) applySetup() tea.Cmd {
 	packSelected, _, packBytes, _ := m.packSelectionSummary()
 	packChanged := m.packSelectionChanged()
 	executable := m.options.Executable
-	ctx := m.ctx
-	return func() tea.Msg {
+	parentCtx := m.ctx
+	m.packApplyID++
+	applyID := m.packApplyID
+	ctx, cancel := context.WithCancel(parentCtx)
+	m.packApplyStop = cancel
+	m.packApplyEvents = make(map[string]docpacks.ApplyEvent, len(desired))
+	m.packApplyOrder = m.packApplyOrder[:0]
+	if packChanged {
+		m.packApplyOrder = append(m.packApplyOrder, desired...)
+		sort.Strings(m.packApplyOrder)
+	}
+	var preparedTotal int64
+	available := make(map[string]docpacks.Pack, len(catalog.Packs))
+	for _, pack := range catalog.Packs {
+		available[pack.ID] = pack
+	}
+	for _, id := range m.packApplyOrder {
+		pack := available[id]
+		preparedTotal += pack.Bytes
+		m.packApplyEvents[id] = docpacks.ApplyEvent{
+			Stage: docpacks.ApplyStageWaiting, PackID: id, PackName: pack.Name,
+			PackBytesTotal: pack.Bytes,
+		}
+	}
+	for id, event := range m.packApplyEvents {
+		event.PreparedBytesTotal = preparedTotal
+		m.packApplyEvents[id] = event
+	}
+	m.packApplyStage = docpacks.ApplyStageWaiting
+	m.packApplyPhase = setupApplyPreparing
+	m.packApplyChanged = packChanged
+	m.packRemovalOnly = packChanged && len(desired) == 0
+	m.message = ""
+	canStop := &atomic.Bool{}
+	canStop.Store(manager != nil && catalogOK && packChanged)
+	m.packApplyCanStop = canStop
+	updates := make(chan tea.Msg, 64)
+	done := make(chan struct{})
+	m.packApplyDone = done
+	m.packApplyUpdates = updates
+	go func() {
+		defer close(done)
+		defer close(updates)
+		defer cancel()
 		packResult := setupPackApplyResult{
 			changed: packChanged, selected: packSelected, bytes: packBytes,
 		}
-		if cfg != m.originalSettings {
-			if err := config.Save(paths, cfg); err != nil {
-				return setupAppliedMsg{packs: packResult, err: err}
+		send := func(message tea.Msg) bool {
+			if ctx.Err() != nil {
+				return false
 			}
+			select {
+			case updates <- message:
+				return ctx.Err() == nil
+			case <-ctx.Done():
+				return false
+			}
+		}
+		finish := func(message setupAppliedMsg) { message.id = applyID; send(message) }
+		phase := func(value setupApplyPhase) bool {
+			return send(setupApplyPhaseMsg{id: applyID, phase: value})
 		}
 		if manager != nil && catalogOK {
 			packResult.attempted = true
@@ -430,16 +575,41 @@ func (m *setupModel) applySetup() tea.Cmd {
 						UserRoot: paths.Library, IndexPath: filepath.Join(paths.Index, "library.sqlite"),
 						PackArchives: archives, ListTokenBudget: cfg.ListTokenBudget, ReadTokenBudget: cfg.ReadTokenBudget,
 					})
+				}, func(event docpacks.ApplyEvent) {
+					if event.Stage == docpacks.ApplyStageIndexing {
+						canStop.Store(false)
+					}
+					send(setupApplyProgressMsg{id: applyID, event: event})
 				})
 				if err != nil {
 					packResult.err = err
-					return setupAppliedMsg{packs: packResult, err: fmt.Errorf("apply API packs: %w", err)}
+					finish(setupAppliedMsg{packs: packResult, err: fmt.Errorf("apply API packs: %w", err)})
+					return
 				}
 			}
+		}
+		canStop.Store(false)
+		if !phase(setupApplySaving) {
+			return
+		}
+		if parentCtx.Err() != nil {
+			return
+		}
+		if cfg != originalSettings {
+			if err := config.Save(paths, cfg); err != nil {
+				finish(setupAppliedMsg{packs: packResult, err: err})
+				return
+			}
+		}
+		if !phase(setupApplyRegistering) {
+			return
 		}
 		var results []clientApplyResult
 		var failures []error
 		for index, status := range clients {
+			if parentCtx.Err() != nil {
+				return
+			}
 			if status.Err != nil || !selected[index] && !status.Configured {
 				continue
 			}
@@ -462,7 +632,28 @@ func (m *setupModel) applySetup() tea.Cmd {
 			}
 			results = append(results, result)
 		}
-		return setupAppliedMsg{results: results, packs: packResult, err: errors.Join(failures...)}
+		if !phase(setupApplyFinishing) {
+			return
+		}
+		finish(setupAppliedMsg{results: results, packs: packResult, err: errors.Join(failures...)})
+	}()
+	return waitSetupApply(applyID, updates, parentCtx)
+}
+
+func waitSetupApply(id int, updates <-chan tea.Msg, parent context.Context) tea.Cmd {
+	if updates == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		select {
+		case message, ok := <-updates:
+			if !ok {
+				return setupApplyClosedMsg{id: id}
+			}
+			return message
+		case <-parent.Done():
+			return setupApplyClosedMsg{id: id}
+		}
 	}
 }
 
@@ -477,19 +668,115 @@ func (m *setupModel) View() string {
 	case setupSettings:
 		return m.viewSetupSettings()
 	case setupApplying:
-		if m.packManager != nil {
-			if !m.packCatalogOK {
-				return setupHeader() + "\n\nSaving settings and registering clients; API packs will remain unchanged…\n"
-			}
-			return setupHeader() + "\n\nSaving settings, applying API packs, and registering clients…\n"
-		}
-		return setupHeader() + "\n\nSaving settings and registering clients…\n"
+		return m.viewSetupApplying()
 	default:
 		return m.viewSetupDone()
 	}
 }
 
 func setupHeader() string { return styleTitle.Render("apis-mcp setup") }
+
+func (m *setupModel) viewSetupApplying() string {
+	lines := []string{setupHeader(), "", "Applying configuration"}
+	var prepared, total int64
+	for _, event := range m.packApplyEvents {
+		prepared = max(prepared, event.PreparedBytesDone)
+		total = max(total, event.PreparedBytesTotal)
+	}
+	if m.packManager == nil {
+		lines = append(lines, "  API packs are not managed in this setup.")
+	} else if !m.packCatalogOK {
+		lines = append(lines, "  API packs unchanged because the catalog is unavailable.")
+	} else if !m.packApplyChanged {
+		lines = append(lines, "  API packs unchanged; skipping archive verification.")
+	} else {
+		lines = append(lines, "  API packs")
+		packBudget := max(1, m.height-8)
+		shown := min(len(m.packApplyOrder), packBudget)
+		if len(m.packApplyOrder) > packBudget {
+			shown = max(0, packBudget-1)
+		}
+		for _, id := range m.packApplyOrder[:shown] {
+			event := m.packApplyEvents[id]
+			name := event.PackName
+			if name == "" {
+				name = id
+			}
+			lines = append(lines, fmt.Sprintf("  %-24s %-16s %s / %s", safeLine(name), setupApplyStatus(event), formatSetupBytes(event.PackBytesDone), formatSetupBytes(event.PackBytesTotal)))
+		}
+		if hidden := len(m.packApplyOrder) - shown; hidden > 0 {
+			lines = append(lines, fmt.Sprintf("  %d more packs", hidden))
+		} else if len(m.packApplyOrder) == 0 {
+			if m.packRemovalOnly {
+				lines = append(lines, "  No API packs selected; preparing removal-only rebuild.")
+			} else {
+				lines = append(lines, "  No API packs selected; nothing to download.")
+			}
+		}
+		lines = append(lines, fmt.Sprintf("  Prepared %s / %s  %s", formatSetupBytes(prepared), formatSetupBytes(total), setupProgressBar(prepared, total, 24)))
+	}
+	lines = append(lines, "  "+setupApplyPhaseText(m.packApplyPhase))
+	if m.cancelled {
+		lines = append(lines, "  "+m.message)
+	} else if m.message == "Finishing safely; this stage cannot be cancelled." {
+		lines = append(lines, "  "+m.message)
+	} else if m.packApplyCanStop != nil && m.packApplyCanStop.Load() {
+		lines = append(lines, styleDim.Render("  ctrl+c cancel safely"))
+	} else {
+		lines = append(lines, styleDim.Render("  Finishing safely; this stage cannot be cancelled."))
+	}
+	if m.height > 0 && len(lines) > m.height {
+		if m.height == 1 {
+			lines = lines[:1]
+		} else {
+			lines = append([]string{lines[0]}, lines[len(lines)-m.height+1:]...)
+		}
+	}
+	return m.setupView(lines)
+}
+
+func setupApplyPhaseText(phase setupApplyPhase) string {
+	switch phase {
+	case setupApplyIndexing:
+		return "Indexing documentation library…"
+	case setupApplyPublishing:
+		return "Publishing API pack selection…"
+	case setupApplySaving:
+		return "Saving settings…"
+	case setupApplyRegistering:
+		return "Registering clients…"
+	case setupApplyFinishing:
+		return "Finishing setup…"
+	default:
+		return "Preparing API packs…"
+	}
+}
+
+func setupApplyStatus(event docpacks.ApplyEvent) string {
+	switch event.Stage {
+	case docpacks.ApplyStageCheckingCache:
+		return "checking cache"
+	case docpacks.ApplyStageDownloading:
+		return "downloading"
+	case docpacks.ApplyStageVerifying:
+		return "verifying"
+	case docpacks.ApplyStageReady:
+		if event.Cached {
+			return "cached"
+		}
+		return "ready"
+	default:
+		return "waiting"
+	}
+}
+
+func setupProgressBar(done, total int64, width int) string {
+	filled := 0
+	if total > 0 {
+		filled = int(min(total, max(int64(0), done)) * int64(width) / total)
+	}
+	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", width-filled) + "]"
+}
 
 func (m *setupModel) viewSetupClients() string {
 	var out strings.Builder

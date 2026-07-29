@@ -28,25 +28,55 @@ func run(ctx context.Context, args []string) int {
 		Version: version, Executable: executable,
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	}
+	return runWithDependencies(ctx, args, options, defaultRunDependencies())
+}
 
-	if len(args) == 0 && !isTerminal() || len(args) > 0 && args[0] == "mcp" {
-		if len(args) > 1 {
-			fmt.Fprintln(os.Stderr, "apis-mcp: mcp does not accept arguments")
-			return 2
-		}
-		runtime, err := bootstrap.Open(ctx)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "apis-mcp:", err)
+type runDependencies struct {
+	isTerminal   func() bool
+	openRuntime  func(context.Context) (*bootstrap.Runtime, error)
+	closeRuntime func(*bootstrap.Runtime) error
+	serveMCP     func(context.Context, *bootstrap.Runtime, string) error
+	runCLI       func(context.Context, *bootstrap.Runtime, []string, cli.Options) int
+	runLauncher  func(context.Context, cli.Options) error
+}
+
+func defaultRunDependencies() runDependencies {
+	return runDependencies{
+		isTerminal: isTerminal, openRuntime: bootstrap.Open, closeRuntime: closeRuntime,
+		serveMCP: func(ctx context.Context, runtime *bootstrap.Runtime, version string) error {
+			return mcpserver.ServeStdio(ctx, runtime, version)
+		},
+		runCLI: cli.Run, runLauncher: cli.RunLauncher,
+	}
+}
+
+func runWithDependencies(ctx context.Context, args []string, options cli.Options, dependencies runDependencies) int {
+	if len(args) == 0 && dependencies.isTerminal() {
+		if err := dependencies.runLauncher(ctx, options); err != nil {
+			fmt.Fprintln(options.Stderr, "apis-mcp:", err)
 			return 1
 		}
-		serveErr := mcpserver.ServeStdio(ctx, runtime, version)
-		closeErr := closeRuntime(runtime)
+		return 0
+	}
+
+	if len(args) == 0 || len(args) > 0 && args[0] == "mcp" {
+		if len(args) > 1 {
+			fmt.Fprintln(options.Stderr, "apis-mcp: mcp does not accept arguments")
+			return 2
+		}
+		runtime, err := dependencies.openRuntime(ctx)
+		if err != nil {
+			fmt.Fprintln(options.Stderr, "apis-mcp:", err)
+			return 1
+		}
+		serveErr := dependencies.serveMCP(ctx, runtime, options.Version)
+		closeErr := dependencies.closeRuntime(runtime)
 		if serveErr != nil {
-			fmt.Fprintln(os.Stderr, "apis-mcp:", serveErr)
+			fmt.Fprintln(options.Stderr, "apis-mcp:", serveErr)
 			return 1
 		}
 		if closeErr != nil {
-			fmt.Fprintln(os.Stderr, "apis-mcp: shutdown:", closeErr)
+			fmt.Fprintln(options.Stderr, "apis-mcp: shutdown:", closeErr)
 			return 1
 		}
 		return 0
@@ -54,20 +84,20 @@ func run(ctx context.Context, args []string) int {
 
 	command, err := cli.Parse(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "apis-mcp:", err)
+		fmt.Fprintln(options.Stderr, "apis-mcp:", err)
 		return 2
 	}
 	if command.Name == "help" || command.Name == "version" || command.Name == "install" || command.Name == "configure" || command.Name == "uninstall" {
-		return cli.Run(ctx, nil, args, options)
+		return dependencies.runCLI(ctx, nil, args, options)
 	}
-	runtime, err := bootstrap.Open(ctx)
+	runtime, err := dependencies.openRuntime(ctx)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "apis-mcp:", err)
+		fmt.Fprintln(options.Stderr, "apis-mcp:", err)
 		return 1
 	}
-	code := cli.Run(ctx, runtime, args, options)
-	if err := closeRuntime(runtime); err != nil {
-		fmt.Fprintln(os.Stderr, "apis-mcp: shutdown:", err)
+	code := dependencies.runCLI(ctx, runtime, args, options)
+	if err := dependencies.closeRuntime(runtime); err != nil {
+		fmt.Fprintln(options.Stderr, "apis-mcp: shutdown:", err)
 		return 1
 	}
 	return code
