@@ -1,6 +1,7 @@
 # apis-mcp installer (Windows). Run in PowerShell:
 #   irm https://github.com/sairaph/apis-mcp/raw/main/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
+$global:LASTEXITCODE = 0
 # Invoke-WebRequest's built-in progress bar is slow and flickers badly in
 # Windows PowerShell; the download below renders its own.
 $ProgressPreference    = 'SilentlyContinue'
@@ -14,7 +15,7 @@ $arch = $env:PROCESSOR_ARCHITECTURE
 switch ($arch) {
   { $_ -in 'AMD64','x64' } { $target = 'windows-amd64' }
   'ARM64'                  { $target = 'windows-arm64' }
-  default                  { Write-Host "  Unsupported architecture: $arch" -ForegroundColor Red; return }
+  default                  { Write-Host "  Unsupported architecture: $arch" -ForegroundColor Red; $global:LASTEXITCODE = 1; return }
 }
 
 $Asset = "$Binary-$target.exe"
@@ -31,30 +32,26 @@ Write-Host ""
 
 Write-Host "  Downloading $Asset..."
 
-# If the old binary is still present, clear it so we can write fresh. If it is
-# locked, fall back to a temp file and swap.
+# Always stage beside the target. The existing executable remains untouched
+# until the download is complete, flushed, closed, and validated.
 $tempTarget = "$Target.new"
-$usingTemp  = $false
-Remove-Item $Target -Force -ErrorAction SilentlyContinue
+$backupTarget = "$Target.old"
+Remove-Item $tempTarget -Force -ErrorAction SilentlyContinue
 
 $request = $null
 $response = $null
 $stream = $null
 $fs = $null
+$downloadError = $null
 try {
   $request = [System.Net.HttpWebRequest]::Create($Url)
   $request.Method = "GET"
   $response = $request.GetResponse()
-  $total = [int]$response.ContentLength
+  $total = [long]$response.ContentLength
   $stream = $response.GetResponseStream()
-  try {
-    $fs = [System.IO.File]::Create($Target)
-  } catch {
-    $fs = [System.IO.File]::Create($tempTarget)
-    $usingTemp = $true
-  }
+  $fs = [System.IO.File]::Create($tempTarget)
   $buffer = New-Object byte[] 65536
-  $downloaded = 0
+  $downloaded = [long]0
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $lastUpdate = 0
 
@@ -86,36 +83,90 @@ try {
   # Force a final 100% render.
   & $renderBar $downloaded $total $sw.Elapsed.TotalSeconds
   Write-Host ""
+  if ($total -ge 0 -and $downloaded -ne $total) {
+    throw "Download was incomplete: received $downloaded of $total bytes."
+  }
 } catch {
-  Write-Host ""
-  Write-Host "  Download failed: $_" -ForegroundColor Red
-  Write-Host "  URL: $Url" -ForegroundColor Red
-  Remove-Item $Target -ErrorAction SilentlyContinue
-  Remove-Item $tempTarget -ErrorAction SilentlyContinue
-  return
+  $downloadError = $_
 } finally {
-  if ($fs -ne $null) { $fs.Close() }
-  if ($stream -ne $null) { $stream.Close() }
-  if ($response -ne $null) { $response.Close() }
+  if ($fs -ne $null) {
+    try { $fs.Flush() } catch { if ($null -eq $downloadError) { $downloadError = $_ } }
+    try { $fs.Close() } catch { if ($null -eq $downloadError) { $downloadError = $_ } }
+  }
+  if ($stream -ne $null) { try { $stream.Close() } catch {} }
+  if ($response -ne $null) { try { $response.Close() } catch {} }
 }
 
-# If we downloaded to a temp file (the old exe was locked), swap it into place.
-if ($usingTemp) {
-  Remove-Item $Target -Force -ErrorAction SilentlyContinue
-  try {
-    Move-Item $tempTarget $Target -Force
-  } catch {
-    Write-Host ""
-    Write-Host "  Could not replace $Binary.exe: $_" -ForegroundColor Red
-    Write-Host "  Close any running $Binary process and re-run the installer." -ForegroundColor Yellow
-    Remove-Item $tempTarget -ErrorAction SilentlyContinue
-    return
-  }
+if ($null -ne $downloadError) {
+  Write-Host ""
+  Write-Host "  Download failed: $downloadError" -ForegroundColor Red
+  Write-Host "  URL: $Url" -ForegroundColor Red
+  Remove-Item $tempTarget -Force -ErrorAction SilentlyContinue
+  $global:LASTEXITCODE = 1
+  return
 }
-# Clean up a partial / zero-byte download so a later retry starts fresh.
-if (-not (Test-Path $Target) -or (Get-Item $Target).Length -eq 0) {
-  Remove-Item $Target -ErrorAction SilentlyContinue
+
+if (-not (Test-Path -LiteralPath $tempTarget -PathType Leaf) -or (Get-Item -LiteralPath $tempTarget).Length -eq 0) {
+  Remove-Item $tempTarget -Force -ErrorAction SilentlyContinue
   Write-Host "  Download did not complete; nothing was installed." -ForegroundColor Red
+  $global:LASTEXITCODE = 1
+  return
+}
+
+$replacingExisting = Test-Path -LiteralPath $Target -PathType Leaf
+if ($replacingExisting) {
+  # Bound the compatibility hook so an unresponsive legacy binary cannot hold
+  # the installer indefinitely. Output is drained and discarded.
+  $stopProcess = $null
+  try {
+    $stopInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $stopInfo.FileName = $Target
+    $stopInfo.Arguments = 'daemon --stop'
+    $stopInfo.UseShellExecute = $false
+    $stopInfo.CreateNoWindow = $true
+    $stopInfo.RedirectStandardOutput = $true
+    $stopInfo.RedirectStandardError = $true
+    $stopProcess = New-Object System.Diagnostics.Process
+    $stopProcess.StartInfo = $stopInfo
+    $null = $stopProcess.Start()
+    $stopProcess.BeginOutputReadLine()
+    $stopProcess.BeginErrorReadLine()
+    if (-not $stopProcess.WaitForExit(3000)) {
+      $stopProcess.Kill()
+      $stopProcess.WaitForExit()
+    } else {
+      $stopProcess.WaitForExit()
+    }
+  } catch {
+  } finally {
+    if ($null -ne $stopProcess) { $stopProcess.Dispose() }
+  }
+  Start-Sleep -Milliseconds 300
+}
+
+Remove-Item $backupTarget -Force -ErrorAction SilentlyContinue
+try {
+  if (Test-Path -LiteralPath $Target -PathType Leaf) {
+    [System.IO.File]::Replace($tempTarget, $Target, $backupTarget, $true)
+  } else {
+    Move-Item -LiteralPath $tempTarget -Destination $Target
+  }
+  Remove-Item $backupTarget -Force -ErrorAction SilentlyContinue
+} catch {
+  $replaceError = $_
+  if (-not (Test-Path -LiteralPath $Target) -and (Test-Path -LiteralPath $backupTarget -PathType Leaf)) {
+    try { Move-Item -LiteralPath $backupTarget -Destination $Target -Force } catch {}
+  }
+  Write-Host ""
+  Write-Host "  Could not replace $Binary.exe: $replaceError" -ForegroundColor Red
+  if (Test-Path -LiteralPath $Target -PathType Leaf) {
+    Write-Host "  The existing executable was kept at $Target." -ForegroundColor Yellow
+  } elseif (Test-Path -LiteralPath $backupTarget -PathType Leaf) {
+    Write-Host "  The existing executable is backed up at $backupTarget." -ForegroundColor Yellow
+  }
+  Write-Host "  Close any running $Binary process and re-run the installer." -ForegroundColor Yellow
+  Remove-Item $tempTarget -Force -ErrorAction SilentlyContinue
+  $global:LASTEXITCODE = 1
   return
 }
 
@@ -148,6 +199,7 @@ try {
 } catch {
   Write-Host "  configure did not complete: $_" -ForegroundColor Red
   Write-Host "  Re-run '$Binary configure' later to finish setup." -ForegroundColor Yellow
+  $global:LASTEXITCODE = 1
   return
 }
 
@@ -165,3 +217,4 @@ if ($pathChanged) {
 } else {
   Write-Host "  Run '$Binary' to browse and use your APIs."
 }
+$global:LASTEXITCODE = 0

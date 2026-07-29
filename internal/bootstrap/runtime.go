@@ -13,6 +13,7 @@ import (
 
 	"github.com/sairaph/apis-mcp/internal/cache"
 	"github.com/sairaph/apis-mcp/internal/config"
+	"github.com/sairaph/apis-mcp/internal/docpacks"
 	"github.com/sairaph/apis-mcp/internal/httpcall"
 	"github.com/sairaph/apis-mcp/internal/sessions"
 	"github.com/sairaph/apis-mcp/library"
@@ -30,9 +31,12 @@ type Runtime struct {
 	Cache    *cache.Store
 	Sessions *sessions.Manager
 	HTTP     *httpcall.Service
+	Packs    *docpacks.Manager
 
 	cleanupCancel context.CancelFunc
 	cleanupDone   chan struct{}
+	libraryMu     sync.RWMutex
+	packArchives  []string
 	diagnosticMu  sync.Mutex
 	diagnostics   []error
 	closeOnce     sync.Once
@@ -44,7 +48,7 @@ func Open(ctx context.Context) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, dir := range []string{paths.Root, paths.Library, paths.Index, paths.Cache, paths.Sessions} {
+	for _, dir := range []string{paths.Root, paths.Library, paths.Packs, paths.Index, paths.Cache, paths.Sessions} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create application directory %s: %w", dir, err)
 		}
@@ -53,11 +57,20 @@ func Open(ctx context.Context) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	packManager, err := docpacks.Open(paths.Packs, docpacks.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("open documentation packs: %w", err)
+	}
+	packArchives, err := packManager.ActiveArchives()
+	if err != nil {
+		return nil, fmt.Errorf("open active documentation packs: %w", err)
+	}
 	snapshot, err := library.Open(ctx, library.Options{
 		UserRoot:        paths.Library,
 		IndexPath:       filepath.Join(paths.Index, "library.sqlite"),
 		ListTokenBudget: cfg.ListTokenBudget,
 		ReadTokenBudget: cfg.ReadTokenBudget,
+		PackArchives:    packArchives,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open documentation library: %w", err)
@@ -79,7 +92,7 @@ func Open(ctx context.Context) (*Runtime, error) {
 	}
 	runtime := &Runtime{
 		Paths: paths, Config: cfg, Library: snapshot, Cache: cacheStore,
-		Sessions: sessionManager,
+		Sessions: sessionManager, Packs: packManager, packArchives: append([]string(nil), packArchives...),
 	}
 	_ = runtime.cleanup("initial")
 
@@ -216,10 +229,41 @@ func appendDiagnostic(path string, diagnostic error) error {
 }
 
 func (r *Runtime) RebuildLibrary(ctx context.Context) error {
-	return library.Rebuild(ctx, library.Options{
+	archives := []string(nil)
+	if r.Packs != nil {
+		var err error
+		archives, err = r.Packs.ActiveArchives()
+		if err != nil {
+			return fmt.Errorf("open active documentation packs: %w", err)
+		}
+	}
+	options := library.Options{
 		UserRoot:        r.Paths.Library,
 		IndexPath:       filepath.Join(r.Paths.Index, "library.sqlite"),
 		ListTokenBudget: r.Config.ListTokenBudget,
 		ReadTokenBudget: r.Config.ReadTokenBudget,
-	})
+		PackArchives:    archives,
+	}
+	if err := library.Rebuild(ctx, options); err != nil {
+		return err
+	}
+	r.libraryMu.Lock()
+	r.packArchives = append(r.packArchives[:0], archives...)
+	r.libraryMu.Unlock()
+	return nil
+}
+
+// LibraryOptions returns the current pack and user library configuration for
+// opening another snapshot.
+func (r *Runtime) LibraryOptions() library.Options {
+	r.libraryMu.RLock()
+	archives := append([]string(nil), r.packArchives...)
+	r.libraryMu.RUnlock()
+	return library.Options{
+		UserRoot:        r.Paths.Library,
+		IndexPath:       filepath.Join(r.Paths.Index, "library.sqlite"),
+		ListTokenBudget: r.Config.ListTokenBudget,
+		ReadTokenBudget: r.Config.ReadTokenBudget,
+		PackArchives:    archives,
+	}
 }

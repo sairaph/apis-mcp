@@ -89,3 +89,15 @@ func TestRestoreDefaults(t *testing.T) {
 		t.Fatalf("restore did not persist defaults: %+v", loaded)
 	}
 }
+
+func TestDefaultPathsIncludesPacks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	paths, err := DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths.Packs != filepath.Join(home, ".apis-mcp", "packs") {
+		t.Fatalf("packs path = %q", paths.Packs)
+	}
+}

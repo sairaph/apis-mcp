@@ -34,7 +34,7 @@ type Snapshot struct {
 func Open(ctx context.Context, options Options, sources []Source) (*Snapshot, error) {
 	options, err := normalizeOptions(options)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, closeSources(sources))
 	}
 	catalog, err := loadCatalog(sources)
 	if err != nil {
@@ -62,7 +62,7 @@ func Open(ctx context.Context, options Options, sources []Source) (*Snapshot, er
 func Rebuild(ctx context.Context, options Options, sources []Source) error {
 	options, err := normalizeOptions(options)
 	if err != nil {
-		return err
+		return errors.Join(err, closeSources(sources))
 	}
 	catalog, err := loadCatalog(sources)
 	if err != nil {

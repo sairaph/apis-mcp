@@ -183,9 +183,7 @@ func TestSnapshotSwapStaleAndPendingTeardownCloseImmediately(t *testing.T) {
 }
 
 func fixtureLibraryOptions(runtime *bootstrap.Runtime) library.Options {
-	options := libraryOptions(runtime)
-	options.ExcludeBuiltin = true
-	return options
+	return libraryOptions(runtime)
 }
 
 func assertSnapshotClosed(t *testing.T, snapshot *library.Snapshot) {

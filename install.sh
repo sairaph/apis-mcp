@@ -58,6 +58,26 @@ if [ ! -s "$TEMP" ]; then
   exit 1
 fi
 chmod +x "$TEMP"
+
+# Older releases could leave a daemon running from this executable. Only stop
+# it after the replacement has been fully staged and validated.
+if [ -x "$TARGET" ]; then
+  "$TARGET" daemon --stop </dev/null >/dev/null 2>&1 &
+  daemon_stop_pid=$!
+  # POSIX sh has no timed wait, so a watchdog terminates the child after three
+  # seconds and escalates if it does not respond to TERM.
+  (
+    sleep 3
+    kill "$daemon_stop_pid" 2>/dev/null || exit 0
+    sleep 1
+    kill -KILL "$daemon_stop_pid" 2>/dev/null || true
+  ) &
+  daemon_timeout_pid=$!
+  wait "$daemon_stop_pid" 2>/dev/null || true
+  kill "$daemon_timeout_pid" 2>/dev/null || true
+  wait "$daemon_timeout_pid" 2>/dev/null || true
+fi
+
 mv -f "$TEMP" "$TARGET"
 trap - EXIT HUP INT TERM
 

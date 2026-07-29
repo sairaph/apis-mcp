@@ -90,8 +90,6 @@ type jobStore struct {
 	root   string
 }
 
-var excludeBuiltinFromJobIndex bool
-
 func openJobStore(output string, create bool) (*jobStore, error) {
 	absolute, err := filepath.Abs(strings.TrimSpace(output))
 	if err != nil || strings.TrimSpace(output) == "" {
@@ -371,7 +369,7 @@ func (store *jobStore) recoverPublished(job ingestJob) (ingestJob, bool) {
 		return ingestJob{}, false
 	}
 	snapshot, err := library.Open(context.Background(), library.Options{
-		UserRoot: job.Request.Output, IndexPath: filepath.Join(job.Request.Output, "library.sqlite"), ExcludeBuiltin: excludeBuiltinFromJobIndex,
+		UserRoot: job.Request.Output, IndexPath: filepath.Join(job.Request.Output, "library.sqlite"),
 	})
 	if err != nil {
 		return ingestJob{}, false
@@ -435,7 +433,7 @@ func (store *jobStore) recoverOwnedPublication(job ingestJob) (ingestJob, bool) 
 		return ingestJob{}, false
 	}
 	snapshot, err := library.Open(context.Background(), library.Options{
-		UserRoot: job.Request.Output, IndexPath: filepath.Join(job.Request.Output, "library.sqlite"), ExcludeBuiltin: excludeBuiltinFromJobIndex,
+		UserRoot: job.Request.Output, IndexPath: filepath.Join(job.Request.Output, "library.sqlite"),
 	})
 	if err != nil {
 		return ingestJob{}, false
@@ -496,7 +494,7 @@ func (store *jobStore) rollbackOwnedPublication(job ingestJob) error {
 		}
 	}
 	if err := library.Rebuild(context.Background(), library.Options{
-		UserRoot: job.Request.Output, IndexPath: filepath.Join(job.Request.Output, "library.sqlite"), ExcludeBuiltin: excludeBuiltinFromJobIndex,
+		UserRoot: job.Request.Output, IndexPath: filepath.Join(job.Request.Output, "library.sqlite"),
 	}); err != nil {
 		return err
 	}
@@ -636,7 +634,7 @@ func runWorker(ctx context.Context, store *jobStore, id string, client *http.Cli
 		MaxSourceBytes: maxSourceBytes, MaxTotalBytes: maxTotalBytes,
 		Rebuild: func(rebuildCtx context.Context) error {
 			progress(importer.Progress{Stage: "indexing", Pages: latestPages})
-			return library.Rebuild(rebuildCtx, library.Options{UserRoot: job.Request.Output, IndexPath: indexPath, ExcludeBuiltin: excludeBuiltinFromJobIndex})
+			return library.Rebuild(rebuildCtx, library.Options{UserRoot: job.Request.Output, IndexPath: indexPath})
 		},
 	}
 	detection, ingestErr := importer.DetectURL(workerCtx, job.Request.Source, options)

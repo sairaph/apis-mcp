@@ -6,8 +6,9 @@
 [![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue)](#what-it-does)
 
 Give any AI agent a **searchable API reference and HTTP workspace** through
-**7 MCP tools**, with 12,989 documentation pages built into one Go binary, a
-universal installer, built-in client detection, and a full TUI for you.
+**7 MCP tools**, with an optional catalog of 12,989 documentation pages, a small
+single binary, a universal installer, built-in client detection, and a full TUI
+for you.
 
 macOS:
 
@@ -29,22 +30,24 @@ irm https://github.com/sairaph/apis-mcp/raw/main/install.ps1 | iex
 
 The installer downloads the right binary for your OS and architecture, puts
 `apis-mcp` on your `PATH`, then opens an interactive configurer. It detects your
-AI clients and lets you choose which ones to connect. Run `apis-mcp configure`
-anytime to change what is connected.
+AI clients and lets you choose both which clients to connect and which API
+references to download. Run `apis-mcp configure` anytime to change either list.
 
 > **After installing, open a new terminal.** The installer adds itself to your
 > `PATH`, but the terminal it ran in keeps the `PATH` it started with.
 
 ## What it does
 
-- **12,989 built-in documentation pages** - searchable references for
+- **Download only the APIs you need** - choose from 12,989 searchable pages for
   Cloudflare, OpenRouter, Stripe, Tailscale, Tavily, Z.ai, and the example API.
+- **A live API catalog** - `Manage APIs` refreshes directly from this repository,
+  so newly published packs appear without an application update.
 - **Seven direct MCP tools** - `apis_collections`, `apis_list`, `apis_pages`,
   `apis_search`, `apis_read`, `apis_call`, and `apis_sessions`.
 - **Local and inspectable** - canonical Markdown with YAML frontmatter and a
   SQLite full-text index rebuilt entirely from those source files.
 - **Bring your own references** - import OpenAPI 3.x, Swagger 2.x, `llms.txt`,
-  and Markdown directories alongside the built-in catalog.
+  and Markdown directories alongside official packs.
 - **A capable HTTP workspace** - persistent response caching, UUIDv7 cookie
   sessions, retries, redirects, compressed responses, JSONPath previews, and
   background downloads.
@@ -77,13 +80,17 @@ supported shell profile or interactive terminal is available, it prints the
 exact `PATH` or configuration command to run later instead of silently skipping
 setup.
 
-Run `apis-mcp configure` whenever you want to change registered AI clients. Run
-`apis-mcp` in a terminal to open the full-screen application.
+Run `apis-mcp configure` whenever you want to change registered AI clients or
+installed API packs. The pack selector uses up to three columns; press `space`
+to toggle one API, `a` to select or clear all, and `r` to refresh the catalog.
+Run `apis-mcp` in a terminal to open the full-screen application.
 
 ## Documentation Library
 
-Built-in documentation is embedded in the binary. User document sets live in
-`~/.apis-mcp/library` and use this structure:
+Official documentation is distributed as content-addressed ZIP packs. Selected
+packs are downloaded and verified under `~/.apis-mcp/packs`; changing the
+selection atomically rebuilds the local search index. User document sets remain
+separate under `~/.apis-mcp/library` and use this structure:
 
 ```text
 my-api/
@@ -166,6 +173,15 @@ Go 1.26 or newer is required.
 go test ./...
 go vet ./...
 CGO_ENABLED=0 go build -trimpath -o apis-mcp .
+```
+
+Official pack sources remain under `library/builtin`, but are not embedded in
+the binary. Regenerate and verify the downloadable artifacts after changing
+them:
+
+```sh
+go run ./internal/cmd/pack generate
+go run ./internal/cmd/pack verify
 ```
 
 The repository also includes a development-only URL ingestion command. It

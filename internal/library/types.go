@@ -15,15 +15,15 @@ var (
 	ErrNotFound        = errors.New("documentation not found")
 )
 
-// Options identifies the canonical user tree and the published SQLite index.
-// Token budgets apply to retrieved records, not transport rendering overhead.
-// ExcludeBuiltin opens only the user tree, primarily for isolated processing.
+// Options identifies official pack archives, the canonical user tree, and the
+// published SQLite index. Token budgets apply to retrieved records, not
+// transport rendering overhead.
 type Options struct {
 	UserRoot        string
 	IndexPath       string
 	ListTokenBudget int
 	ReadTokenBudget int
-	ExcludeBuiltin  bool
+	PackArchives    []string
 }
 
 type CollectionsRequest struct {

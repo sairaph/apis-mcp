@@ -383,6 +383,9 @@ func validPage(page int) (int, error) {
 
 func paginate[T any](records []T, requestedPage, tokenBudget int, render func([]T) (string, error)) ([]T, Pagination, error) {
 	window, totalPages, err := budget.Paginate(records, requestedPage, tokenBudget, render)
+	if totalPages == 0 {
+		totalPages = 1
+	}
 	pagination := Pagination{Page: requestedPage, Total: len(records), TotalPages: totalPages}
 	if err != nil {
 		return nil, pagination, fmt.Errorf("paginate library records: %w", err)

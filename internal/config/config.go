@@ -38,6 +38,7 @@ type Paths struct {
 	Root        string
 	Config      string
 	Library     string
+	Packs       string
 	Index       string
 	Cache       string
 	Sessions    string
@@ -72,6 +73,7 @@ func DefaultPaths() (Paths, error) {
 		Root:        root,
 		Config:      filepath.Join(root, "config.toml"),
 		Library:     filepath.Join(root, "library"),
+		Packs:       filepath.Join(root, "packs"),
 		Index:       filepath.Join(root, "index"),
 		Cache:       filepath.Join(root, "cache", "calls"),
 		Sessions:    filepath.Join(root, "sessions"),

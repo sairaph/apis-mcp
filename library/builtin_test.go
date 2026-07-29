@@ -3,13 +3,14 @@ package library
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"strings"
 	"testing"
 )
 
 func TestBuiltinCatalogContainsOnlyMarkdown(t *testing.T) {
-	err := fs.WalkDir(builtinFiles, "builtin", func(name string, entry fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(os.DirFS("."), "builtin", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}

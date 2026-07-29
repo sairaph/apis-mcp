@@ -277,7 +277,7 @@ func testRuntime(t *testing.T) *bootstrap.Runtime {
 	libraryRoot := filepath.Join(root, "library")
 	writeTestDocumentation(t, libraryRoot)
 	snapshot, err := library.Open(context.Background(), library.Options{
-		UserRoot: libraryRoot, IndexPath: filepath.Join(root, "library.sqlite"), ListTokenBudget: 2_000, ReadTokenBudget: 4_000, ExcludeBuiltin: true,
+		UserRoot: libraryRoot, IndexPath: filepath.Join(root, "library.sqlite"), ListTokenBudget: 2_000, ReadTokenBudget: 4_000,
 	})
 	if err != nil {
 		t.Fatal(err)

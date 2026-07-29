@@ -1,6 +1,9 @@
 #!/bin/sh
 if [ "${1-}" = configure ] && [ -n "${CONFIGURE_LOG:-}" ]; then
   printf 'configure invoked\n' >> "$CONFIGURE_LOG"
+  if [ -n "${EVENT_LOG:-}" ]; then
+    printf 'configure\n' >> "$EVENT_LOG"
+  fi
   printf '\033[?1049hconfigure-ui-stdout\033[?1049l\n'
   printf 'configure-ui-stderr\n' >&2
 fi

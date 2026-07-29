@@ -3,8 +3,8 @@
 package library
 
 import (
+	"archive/zip"
 	"context"
-	"embed"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,9 +12,6 @@ import (
 
 	internal "github.com/sairaph/apis-mcp/internal/library"
 )
-
-//go:embed all:builtin
-var builtinFiles embed.FS
 
 var (
 	ErrInvalidArgument = internal.ErrInvalidArgument
@@ -47,7 +44,7 @@ type (
 // Open validates canonical sources, rebuilds a changed index, and pins the
 // resulting generation until the returned snapshot is closed.
 func Open(ctx context.Context, options Options) (*Snapshot, error) {
-	sources, err := canonicalSources(options.UserRoot, options.ExcludeBuiltin)
+	sources, err := canonicalSources(options.UserRoot, options.PackArchives)
 	if err != nil {
 		return nil, err
 	}
@@ -57,17 +54,38 @@ func Open(ctx context.Context, options Options) (*Snapshot, error) {
 // Rebuild validates and publishes a fingerprint-named SQLite generation. Open
 // snapshots continue to observe their original generation.
 func Rebuild(ctx context.Context, options Options) error {
-	sources, err := canonicalSources(options.UserRoot, options.ExcludeBuiltin)
+	sources, err := canonicalSources(options.UserRoot, options.PackArchives)
 	if err != nil {
 		return err
 	}
 	return internal.Rebuild(ctx, options, sources)
 }
 
-func canonicalSources(userRoot string, excludeBuiltin bool) ([]internal.Source, error) {
-	sources := make([]internal.Source, 0, 2)
-	if !excludeBuiltin {
-		sources = append(sources, internal.Source{Name: "builtin", FS: builtinFiles})
+func canonicalSources(userRoot string, packArchives []string) (_ []internal.Source, returnErr error) {
+	sources := make([]internal.Source, 0, len(packArchives)+1)
+	defer func() {
+		if returnErr == nil {
+			return
+		}
+		for _, source := range sources {
+			if closer, ok := source.FS.(interface{ Close() error }); ok {
+				_ = closer.Close()
+			}
+		}
+	}()
+	for _, archive := range packArchives {
+		if archive == "" {
+			return nil, fmt.Errorf("open documentation pack: archive path is empty")
+		}
+		absolute, err := filepath.Abs(archive)
+		if err != nil {
+			return nil, fmt.Errorf("resolve documentation pack %s: %w", archive, err)
+		}
+		reader, err := zip.OpenReader(absolute)
+		if err != nil {
+			return nil, fmt.Errorf("open documentation pack %s: %w", absolute, err)
+		}
+		sources = append(sources, internal.Source{Name: absolute, FS: reader, Official: true})
 	}
 	if userRoot == "" {
 		return sources, nil

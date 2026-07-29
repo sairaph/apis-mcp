@@ -673,7 +673,7 @@ properties:
 	index := filepath.Join(t.TempDir(), "library.sqlite")
 	result, err := ImportOpenAPI(context.Background(), "Recursive response API", "v1", server.URL+"/specs/main.yaml", Options{
 		LibraryRoot: root, HTTPClient: server.Client(), Rebuild: func(ctx context.Context) error {
-			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
+			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index})
 		},
 	})
 	if err != nil {
@@ -693,7 +693,7 @@ properties:
 	if generated := string(raw); !strings.Contains(generated, "child:") || !strings.Contains(generated, "#/components/schemas/node") || strings.Contains(generated, "node.yaml") {
 		t.Fatalf("operation schema root was not bundled once:\n%s", generated)
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +737,7 @@ paths:
 	index := filepath.Join(t.TempDir(), "library.sqlite")
 	result, err := ImportOpenAPI(context.Background(), "Sibling API", "v1", server.URL+"/specs/main.yaml", Options{
 		LibraryRoot: root, HTTPClient: server.Client(), Rebuild: func(ctx context.Context) error {
-			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
+			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index})
 		},
 	})
 	if err != nil {
@@ -758,7 +758,7 @@ paths:
 	if !strings.Contains(generated, "Referenced operation") || !strings.Contains(generated, "`POST /items`") || !strings.Contains(generated, "Local operation") || !strings.Contains(generated, "`GET /items`") {
 		t.Fatalf("OpenAPI 3.0 Path Item siblings were not merged:\n%s", generated)
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +833,7 @@ webhooks:
 	index := filepath.Join(t.TempDir(), "library.sqlite")
 	result, err := ImportOpenAPI(context.Background(), "Path contexts", "v1", server.URL+"/specs/main.yaml", Options{
 		LibraryRoot: root, HTTPClient: server.Client(), Rebuild: func(ctx context.Context) error {
-			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
+			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index})
 		},
 	})
 	if err != nil {
@@ -873,7 +873,7 @@ webhooks:
 	if strings.Count(generatedWebhooks, "page_id: webhook-operation-") != 2 {
 		t.Fatalf("webhook page IDs are not distinct and deterministic:\n%s", generatedWebhooks)
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -942,7 +942,7 @@ webhooks:
 	index := filepath.Join(t.TempDir(), "library.sqlite")
 	result, err := ImportOpenAPI(context.Background(), "Webhook only", "v1", server.URL+"/openapi.yaml", Options{
 		LibraryRoot: root, HTTPClient: server.Client(), Rebuild: func(ctx context.Context) error {
-			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
+			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index})
 		},
 	})
 	if err != nil {

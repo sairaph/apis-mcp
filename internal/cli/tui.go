@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -864,10 +863,7 @@ func loadCatalog(ctx context.Context, snapshot *library.Snapshot) ([]library.Col
 }
 
 func libraryOptions(runtime *bootstrap.Runtime) library.Options {
-	return library.Options{
-		UserRoot: runtime.Paths.Library, IndexPath: filepath.Join(runtime.Paths.Index, "library.sqlite"),
-		ListTokenBudget: runtime.Config.ListTokenBudget, ReadTokenBudget: runtime.Config.ReadTokenBudget,
-	}
+	return runtime.LibraryOptions()
 }
 
 // RunInteractive starts one alternate-screen Bubble Tea application.

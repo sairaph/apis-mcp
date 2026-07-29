@@ -30,6 +30,11 @@ binary into a per-user application directory, make the command available on
 available. Setup can also be reopened later from the full CLI application or by
 an explicit configuration command.
 
+Setup refreshes the official documentation-pack catalog and lets the user choose
+which API families to keep locally. Opening setup again fetches newly published
+catalog entries without requiring a new application release. An unavailable
+catalog never removes or disables already installed packs.
+
 The setup flow detects supported MCP clients and registers selected clients
 with an absolute path to the installed binary plus the `mcp` subcommand. Client
 configuration never relies on the client's working directory or on `apis-mcp`
@@ -68,11 +73,18 @@ The first release uses the following local-first implementation defaults:
 
 - One CGO-free Go binary is built for Linux, macOS, and Windows on amd64 and
   arm64.
-- Project-maintained canonical Markdown is embedded in the binary. User
-  document sets live under `~/.apis-mcp/library`; the CLI prints this path and
-  can open or rebuild it.
-- A user document set may not replace or merge with an existing `doc_id`.
-  Duplicate identities fail validation with both source locations reported.
+- Project-maintained canonical Markdown is published as independently
+  downloadable, content-addressed ZIP packs. The binary embeds no official API
+  catalog. Verified archives and their active state live under
+  `~/.apis-mcp/packs`.
+- The setup flow refreshes the remote catalog on entry. Pack selection supports
+  one, two, or three columns according to terminal width, and stages all changes
+  until the final apply step. Failed downloads or index builds leave the prior
+  active set unchanged.
+- User document sets live under `~/.apis-mcp/library`. A user-defined API family
+  replaces the matching official family as one unit; unrelated official packs
+  remain available. Duplicate identities at the same precedence fail validation
+  with all source locations reported.
 - Each version directory is self-contained. Its `_index.md` repeats API-family
   fields, and all versions of one family must agree on family name,
   description, and collections.
@@ -80,10 +92,10 @@ The first release uses the following local-first implementation defaults:
   parent directory, and `page_id` defaults to a title slug. Stable short hashes
   of relative file paths resolve collisions; explicit `path` and `page_id`
   values are accepted after validation.
-- The server fingerprints and rebuilds changed canonical files at startup.
-  The interactive app and CLI also expose Markdown, OpenAPI, `llms.txt`, and
-  static HTML imports plus explicit rebuild operations. The first release does
-  not add MCP tools that modify the library.
+- The server fingerprints installed packs and user canonical files and rebuilds
+  changed sources at startup. The interactive app and CLI also expose Markdown,
+  OpenAPI, `llms.txt`, and static HTML imports plus explicit rebuild operations.
+  The first release does not add MCP tools that modify the library.
 - Initial source adapters support raw Markdown trees, OpenAPI documents,
   Swagger/Redoc pages exposing an OpenAPI document, `llms.txt`, and ordinary
   static HTML. JavaScript browser automation is not bundled. OpenAPI imports
@@ -107,9 +119,10 @@ The first release uses the following local-first implementation defaults:
 - The installer begins with the client registry and config formats supported by
   `favro-mcp`, while using atomic writes, backups, and explicit partial-failure
   status. Re-running the installer is the binary update mechanism; there is no
-  automatic background updater.
-- Built-in snapshots record source and retrieval metadata and are included only
-  when the project can redistribute them. Users are responsible for custom
+  automatic background updater. A complete replacement binary is staged before
+  the installer sends a bounded, best-effort stop request to any legacy daemon.
+- Official pack sources record source and retrieval metadata and are published
+  only when the project can redistribute them. Users are responsible for custom
   imports.
 - Shutdown stops new work, cancels foreground calls, gives process-owned
   background downloads a short bounded drain, publishes cancellation errors,

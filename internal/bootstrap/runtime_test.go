@@ -1,7 +1,11 @@
 package bootstrap
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,8 +18,10 @@ import (
 
 	"github.com/sairaph/apis-mcp/internal/cache"
 	"github.com/sairaph/apis-mcp/internal/config"
+	"github.com/sairaph/apis-mcp/internal/docpacks"
 	"github.com/sairaph/apis-mcp/internal/httpcall"
 	"github.com/sairaph/apis-mcp/internal/sessions"
+	"github.com/sairaph/apis-mcp/library"
 )
 
 func TestRuntimePeriodicCleanupAndShutdown(t *testing.T) {
@@ -198,6 +204,57 @@ func TestOpenWiresReadTokenBudgetToHTTPPreview(t *testing.T) {
 	}
 }
 
+func TestOpenLoadsActivePacksWithoutRefreshing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack, archive := runtimeTestPack(t)
+	catalog := docpacks.Catalog{SchemaVersion: 1, Packs: []docpacks.Pack{pack}}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/packs/"+pack.Asset {
+			http.NotFound(writer, request)
+			return
+		}
+		_, _ = writer.Write(archive)
+	}))
+	manager, err := docpacks.Open(paths.Packs, docpacks.Options{CatalogURL: server.URL + "/packs/catalog.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Apply(context.Background(), catalog, []string{pack.ID}, func(context.Context, []string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	server.Close()
+
+	runtime, err := Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close(context.Background())
+	listed, err := runtime.Library.List(context.Background(), library.ListRequest{Name: "Startup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Packs == nil || listed.Total != 1 || len(listed.APIs) != 1 || listed.APIs[0].Name != pack.Name {
+		t.Fatalf("runtime did not load active pack: packs=%v list=%+v", runtime.Packs, listed)
+	}
+	if options := runtime.LibraryOptions(); len(options.PackArchives) != 1 || filepath.Base(options.PackArchives[0]) != pack.SHA256+".zip" {
+		t.Fatalf("runtime library options = %+v", options)
+	}
+	if err := manager.Apply(context.Background(), catalog, nil, func(context.Context, []string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.RebuildLibrary(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if options := runtime.LibraryOptions(); len(options.PackArchives) != 0 {
+		t.Fatalf("rebuild did not reread active packs: %+v", options)
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -208,4 +265,34 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("condition was not met before timeout")
+}
+
+func runtimeTestPack(t *testing.T) (docpacks.Pack, []byte) {
+	t.Helper()
+	manifest := "---\nname: Startup API\nversion: v1\ndescription: Startup docs.\ncollections: [examples]\n---\n"
+	page := "---\ntitle: Overview\n---\n\n# Startup\n"
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	for name, content := range map[string]string{
+		"startup-api/v1/_index.md":   manifest,
+		"startup-api/v1/overview.md": page,
+	} {
+		entry, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := buffer.Bytes()
+	hash := sha256.Sum256(archive)
+	return docpacks.Pack{
+		ID: "startup-api", Name: "Startup API", Description: "Startup docs.", Asset: "startup-api-" + hex.EncodeToString(hash[:]) + ".zip",
+		SHA256: hex.EncodeToString(hash[:]), Bytes: int64(len(archive)), UncompressedBytes: int64(len(manifest) + len(page)),
+		Files: 2, Pages: 1, Versions: []string{"v1"}, Collections: []string{"examples"},
+	}, archive
 }

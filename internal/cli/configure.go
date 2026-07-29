@@ -4,12 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sairaph/apis-mcp/internal/config"
+	"github.com/sairaph/apis-mcp/internal/docpacks"
 	"github.com/sairaph/apis-mcp/internal/install"
+	"github.com/sairaph/apis-mcp/library"
 )
 
 type configSetting struct {
@@ -39,14 +45,30 @@ type setupStep int
 
 const (
 	setupClients setupStep = iota
+	setupAPIs
 	setupSummary
 	setupSettings
 	setupApplying
 	setupDone
 )
 
+type setupPacksRefreshedMsg struct {
+	id      int
+	catalog docpacks.Catalog
+	err     error
+}
+
+type setupPackApplyResult struct {
+	attempted bool
+	changed   bool
+	selected  int
+	bytes     int64
+	err       error
+}
+
 type setupAppliedMsg struct {
 	results []clientApplyResult
+	packs   setupPackApplyResult
 	err     error
 }
 
@@ -55,16 +77,34 @@ type setupModel struct {
 	options Options
 	paths   config.Paths
 
-	step          setupStep
-	clients       []install.Status
-	selected      []bool
-	cursor        int
-	showAll       bool
-	settings      config.Config
-	settingCursor int
-	editing       bool
-	input         string
-	choice        bool
+	step             setupStep
+	clients          []install.Status
+	selected         []bool
+	cursor           int
+	showAll          bool
+	settings         config.Config
+	originalSettings config.Config
+	settingCursor    int
+	editing          bool
+	input            string
+	choice           bool
+	width            int
+	height           int
+
+	packManager     *docpacks.Manager
+	packActive      map[string]docpacks.Pack
+	packSelected    map[string]bool
+	packUnlisted    map[string]bool
+	packCatalog     docpacks.Catalog
+	packCatalogOK   bool
+	packLoading     bool
+	packError       error
+	packMessage     string
+	packRefreshID   int
+	packRefreshStop context.CancelFunc
+	packCursor      int
+	packScrollRow   int
+	packApplyResult setupPackApplyResult
 
 	results   []clientApplyResult
 	message   string
@@ -85,7 +125,14 @@ func RunConfigure(ctx context.Context, options Options) error {
 	if err != nil {
 		return err
 	}
-	state := newSetupModel(ctx, options, paths, cfg, install.Detect("", ""))
+	manager, err := docpacks.Open(paths.Packs, docpacks.Options{})
+	if err != nil {
+		return fmt.Errorf("open API packs: %w", err)
+	}
+	state, err := newSetupModelWithPacks(ctx, options, paths, cfg, install.Detect("", ""), manager)
+	if err != nil {
+		return fmt.Errorf("open active API packs: %w", err)
+	}
 	program := tea.NewProgram(state, tea.WithContext(ctx), tea.WithInput(options.Stdin), tea.WithOutput(options.Stdout))
 	_, err = program.Run()
 	return setupRunResult(ctx, state, err)
@@ -108,23 +155,57 @@ func setupRunResult(ctx context.Context, state *setupModel, programErr error) er
 }
 
 func newSetupModel(ctx context.Context, options Options, paths config.Paths, cfg config.Config, clients []install.Status) *setupModel {
+	state, _ := newSetupModelWithPacks(ctx, options, paths, cfg, clients, nil)
+	return state
+}
+
+func newSetupModelWithPacks(ctx context.Context, options Options, paths config.Paths, cfg config.Config, clients []install.Status, manager *docpacks.Manager) (*setupModel, error) {
 	state := &setupModel{
 		ctx: ctx, options: options, paths: paths,
-		clients: clients, selected: make([]bool, len(clients)), settings: cfg,
+		clients: clients, selected: make([]bool, len(clients)), settings: cfg, originalSettings: cfg,
+		width: 100, height: 30, packManager: manager, packCursor: -1,
+		packActive: make(map[string]docpacks.Pack), packSelected: make(map[string]bool), packUnlisted: make(map[string]bool),
 	}
 	for index, status := range clients {
 		state.selected[index] = status.Configured || status.Detected && status.Err == nil
 	}
+	if manager != nil {
+		active, err := manager.Active()
+		if err != nil {
+			return nil, err
+		}
+		for id, pack := range active.Packs {
+			state.packActive[id] = pack
+			state.packSelected[id] = true
+		}
+	}
 	state.cursor = state.firstSelectable()
-	return state
+	return state, nil
 }
 
 func (m *setupModel) Init() tea.Cmd { return nil }
 
 func (m *setupModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = message.Width, message.Height
+		m.ensurePackVisible()
+		return m, nil
+	case setupPacksRefreshedMsg:
+		if message.id != m.packRefreshID {
+			return m, nil
+		}
+		if m.packRefreshStop != nil {
+			m.packRefreshStop()
+			m.packRefreshStop = nil
+		}
+		m.packLoading, m.packError = false, message.err
+		if message.err == nil {
+			m.replacePackCatalog(message.catalog)
+		}
+		return m, nil
 	case setupAppliedMsg:
-		m.results, m.failure, m.saved, m.step = message.results, message.err, message.err == nil, setupDone
+		m.results, m.packApplyResult, m.failure, m.saved, m.step = message.results, message.packs, message.err, message.err == nil, setupDone
 		return m, nil
 	case tea.KeyMsg:
 		if message.String() == "ctrl+c" {
@@ -134,6 +215,8 @@ func (m *setupModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.step {
 		case setupClients:
 			return m.updateSetupClients(message)
+		case setupAPIs:
+			return m.updateSetupAPIs(message)
 		case setupSummary:
 			return m.updateSetupSummary(message)
 		case setupSettings:
@@ -165,9 +248,78 @@ func (m *setupModel) updateSetupClients(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		m.toggleAllClients()
 	case "enter":
+		if m.packManager == nil {
+			m.step, m.cursor, m.message = setupSummary, 0, ""
+			break
+		}
+		return m, m.beginPackRefresh()
+	}
+	return m, nil
+}
+
+func (m *setupModel) updateSetupAPIs(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "esc":
+		m.invalidatePackRefresh()
+		m.step, m.cursor = setupClients, m.firstSelectable()
+	case "r":
+		if !m.packLoading {
+			return m, m.beginPackRefresh()
+		}
+	case "left", "h":
+		m.movePackCursor(-1, 0)
+	case "right", "l":
+		m.movePackCursor(1, 0)
+	case "up", "k":
+		m.movePackCursor(0, -1)
+	case "down", "j":
+		m.movePackCursor(0, 1)
+	case " ":
+		if !m.packLoading {
+			pack := m.focusedPack()
+			if pack == nil {
+				break
+			}
+			m.packSelected[pack.ID] = !m.packSelected[pack.ID]
+			m.packMessage = ""
+		}
+	case "a":
+		if !m.packLoading {
+			m.toggleAllPacks()
+		}
+	case "enter":
+		if m.packLoading {
+			m.invalidatePackRefresh()
+			m.packMessage = "refresh skipped"
+		}
 		m.step, m.cursor, m.message = setupSummary, 0, ""
 	}
 	return m, nil
+}
+
+func (m *setupModel) beginPackRefresh() tea.Cmd {
+	m.step = setupAPIs
+	m.packLoading, m.packError, m.packMessage = true, nil, ""
+	m.packRefreshID++
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.packRefreshStop = cancel
+	id, manager := m.packRefreshID, m.packManager
+	return func() tea.Msg {
+		catalog, err := manager.Refresh(ctx)
+		return setupPacksRefreshedMsg{id: id, catalog: catalog, err: err}
+	}
+}
+
+func (m *setupModel) invalidatePackRefresh() {
+	if !m.packLoading {
+		return
+	}
+	if m.packRefreshStop != nil {
+		m.packRefreshStop()
+		m.packRefreshStop = nil
+	}
+	m.packRefreshID++
+	m.packLoading = false
 }
 
 func (m *setupModel) updateSetupSummary(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -175,7 +327,12 @@ func (m *setupModel) updateSetupSummary(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k", "down", "j":
 		m.cursor = 1 - m.cursor
 	case "esc":
-		m.step, m.cursor = setupClients, m.firstSelectable()
+		if m.packManager != nil {
+			m.step, m.packCursor = setupAPIs, max(0, m.packCursor)
+			m.ensurePackVisible()
+		} else {
+			m.step, m.cursor = setupClients, m.firstSelectable()
+		}
 	case "r":
 		m.settings, m.message = config.Default(), "Recommended defaults restored; they are saved when setup finishes."
 	case "enter":
@@ -250,10 +407,35 @@ func (m *setupModel) applySetup() tea.Cmd {
 	paths, cfg := m.paths, m.settings
 	clients := append([]install.Status(nil), m.clients...)
 	selected := append([]bool(nil), m.selected...)
+	manager, catalog, catalogOK := m.packManager, m.packCatalog, m.packCatalogOK
+	desired := m.selectedPackIDs()
+	packSelected, _, packBytes, _ := m.packSelectionSummary()
+	packChanged := m.packSelectionChanged()
 	executable := m.options.Executable
+	ctx := m.ctx
 	return func() tea.Msg {
-		if err := config.Save(paths, cfg); err != nil {
-			return setupAppliedMsg{err: err}
+		packResult := setupPackApplyResult{
+			changed: packChanged, selected: packSelected, bytes: packBytes,
+		}
+		if cfg != m.originalSettings {
+			if err := config.Save(paths, cfg); err != nil {
+				return setupAppliedMsg{packs: packResult, err: err}
+			}
+		}
+		if manager != nil && catalogOK {
+			packResult.attempted = true
+			if packChanged {
+				err := manager.Apply(ctx, catalog, desired, func(ctx context.Context, archives []string) error {
+					return library.Rebuild(ctx, library.Options{
+						UserRoot: paths.Library, IndexPath: filepath.Join(paths.Index, "library.sqlite"),
+						PackArchives: archives, ListTokenBudget: cfg.ListTokenBudget, ReadTokenBudget: cfg.ReadTokenBudget,
+					})
+				})
+				if err != nil {
+					packResult.err = err
+					return setupAppliedMsg{packs: packResult, err: fmt.Errorf("apply API packs: %w", err)}
+				}
+			}
 		}
 		var results []clientApplyResult
 		var failures []error
@@ -280,7 +462,7 @@ func (m *setupModel) applySetup() tea.Cmd {
 			}
 			results = append(results, result)
 		}
-		return setupAppliedMsg{results: results, err: errors.Join(failures...)}
+		return setupAppliedMsg{results: results, packs: packResult, err: errors.Join(failures...)}
 	}
 }
 
@@ -288,11 +470,19 @@ func (m *setupModel) View() string {
 	switch m.step {
 	case setupClients:
 		return m.viewSetupClients()
+	case setupAPIs:
+		return m.viewSetupAPIs()
 	case setupSummary:
 		return m.viewSetupSummary()
 	case setupSettings:
 		return m.viewSetupSettings()
 	case setupApplying:
+		if m.packManager != nil {
+			if !m.packCatalogOK {
+				return setupHeader() + "\n\nSaving settings and registering clients; API packs will remain unchanged…\n"
+			}
+			return setupHeader() + "\n\nSaving settings, applying API packs, and registering clients…\n"
+		}
 		return setupHeader() + "\n\nSaving settings and registering clients…\n"
 	default:
 		return m.viewSetupDone()
@@ -340,10 +530,372 @@ func (m *setupModel) viewSetupClients() string {
 	return out.String()
 }
 
+func (m *setupModel) viewSetupAPIs() string {
+	if m.width < minimumWidth || m.height < minimumHeight {
+		return fmt.Sprintf("\n  Terminal is %dx%d.\n  apis-mcp needs at least %dx%d.\n", m.width, m.height, minimumWidth, minimumHeight)
+	}
+	lines := []string{
+		setupHeader(),
+		"Manage APIs — choose downloadable documentation packs",
+		m.packCatalogStatus(),
+		"",
+	}
+	if !m.packCatalogOK {
+		if m.packLoading {
+			lines = append(lines, "  Refreshing the API pack catalog; the current selection is locked.", "", "  enter continue unchanged · esc back")
+		} else {
+			lines = append(lines,
+				"  The catalog is unavailable. Existing API packs will be left unchanged.",
+				"",
+				"  r retry · enter continue · esc back",
+			)
+		}
+		return m.setupView(lines)
+	}
+
+	columns := m.packColumns()
+	visibleRows := m.packVisibleRows()
+	totalRows := (len(m.packCatalog.Packs) + columns - 1) / columns
+	startRow := min(m.packScrollRow, max(0, totalRows-visibleRows))
+	endRow := min(totalRows, startRow+visibleRows)
+	cellWidth := max(1, (m.width-2-(columns-1)*2)/columns)
+	for row := startRow; row < endRow; row++ {
+		cells := make([]string, 0, columns)
+		for column := 0; column < columns; column++ {
+			index := row*columns + column
+			if index >= len(m.packCatalog.Packs) {
+				cells = append(cells, fixed("", cellWidth))
+				continue
+			}
+			pack := m.packCatalog.Packs[index]
+			cursor := " "
+			if index == m.packCursor {
+				cursor = styleTitle.Render(">")
+			}
+			mark := styleDim.Render("○")
+			if m.packSelected[pack.ID] {
+				mark = styleSuccess.Render("●")
+			}
+			name := safeLine(pack.Name)
+			if index == m.packCursor {
+				name = styleTitle.Render(name)
+			}
+			cells = append(cells, fixed(fmt.Sprintf("%s %s %s · %s", cursor, mark, name, m.packStatus(pack)), cellWidth))
+		}
+		lines = append(lines, "  "+strings.Join(cells, "  "))
+	}
+	for row := endRow - startRow; row < visibleRows; row++ {
+		lines = append(lines, "")
+	}
+
+	lines = append(lines, "")
+	if pack := m.focusedPack(); pack != nil {
+		lines = append(lines, "  "+styleTitle.Render(safeLine(pack.Name))+"  "+styleDim.Render(m.packStatus(*pack)))
+		description := strings.TrimSpace(safeMultiline(pack.Description))
+		if description == "" {
+			description = "No description provided."
+		}
+		wrapped := wrapLines(description, max(10, m.width-4))
+		for index := 0; index < 2; index++ {
+			line := ""
+			if index < len(wrapped) {
+				line = "  " + wrapped[index]
+			}
+			lines = append(lines, line)
+		}
+		versions := safeLine(strings.Join(pack.Versions, ", "))
+		sizeLabel := "download"
+		if m.packUnlisted[pack.ID] {
+			sizeLabel = "installed archive"
+		}
+		lines = append(lines, fmt.Sprintf("  Versions: %s · %d pages · %s %s", versions, pack.Pages, formatSetupBytes(pack.Bytes), sizeLabel))
+	} else {
+		lines = append(lines, "  No API packs are currently listed.", "", "", "")
+	}
+	lines = append(lines, "", "  Pending: "+m.packSummaryText())
+	footer := "  arrows/hjkl move · space toggle · a all/none · r refresh · enter continue · esc back"
+	if m.packLoading {
+		footer = "  arrows/hjkl move · refreshing; selection locked · enter use current · esc back"
+	}
+	lines = append(lines, styleDim.Render(footer))
+	return m.setupView(lines)
+}
+
+func (m *setupModel) setupView(lines []string) string {
+	for index, line := range lines {
+		lines[index] = ansi.Truncate(line, max(1, m.width), "…")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *setupModel) packCatalogStatus() string {
+	if !m.packCatalogOK {
+		if m.packLoading {
+			return styleDim.Render("Catalog: loading…")
+		}
+		if m.packError != nil {
+			detail := ansi.Truncate(safeLine(m.packError.Error()), max(10, m.width-25), "…")
+			return styleWarning.Render("Catalog unavailable: " + detail)
+		}
+		return styleDim.Render("Catalog: not loaded")
+	}
+	unlisted := m.unlistedPackCount()
+	listed := len(m.packCatalog.Packs) - unlisted
+	status := fmt.Sprintf("Catalog: %d packs", listed)
+	if unlisted > 0 {
+		status += fmt.Sprintf(" · %d unlisted installed", unlisted)
+	}
+	if m.packLoading {
+		status += " · refreshing…"
+	} else if m.packError != nil {
+		status += " · refresh failed; showing the previous catalog"
+	}
+	if m.packMessage != "" {
+		status += " · " + m.packMessage
+	}
+	totalRows := (len(m.packCatalog.Packs) + m.packColumns() - 1) / m.packColumns()
+	if totalRows > m.packVisibleRows() {
+		start := min(m.packScrollRow, totalRows-1) + 1
+		end := min(totalRows, m.packScrollRow+m.packVisibleRows())
+		status += fmt.Sprintf(" · rows %d-%d of %d", start, end, totalRows)
+	}
+	return styleDim.Render(status)
+}
+
+func (m *setupModel) packColumns() int {
+	switch {
+	case m.width >= 120:
+		return 3
+	case m.width >= 80:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func (m *setupModel) packVisibleRows() int { return max(1, m.height-12) }
+
+func (m *setupModel) replacePackCatalog(catalog docpacks.Catalog) {
+	focusedID, previous := "", m.packCursor
+	if pack := m.focusedPack(); pack != nil {
+		focusedID = pack.ID
+	}
+	refreshed := make([]docpacks.Pack, len(catalog.Packs))
+	copy(refreshed, catalog.Packs)
+	catalog.Packs = refreshed
+	listed := make(map[string]bool, len(catalog.Packs))
+	for _, pack := range catalog.Packs {
+		listed[pack.ID] = true
+	}
+	missing := make([]string, 0, len(m.packActive))
+	for id := range m.packActive {
+		if !listed[id] {
+			missing = append(missing, id)
+		}
+	}
+	sort.Strings(missing)
+	m.packUnlisted = make(map[string]bool, len(missing))
+	for _, id := range missing {
+		catalog.Packs = append(catalog.Packs, m.packActive[id])
+		m.packUnlisted[id] = true
+	}
+	m.packCatalog, m.packCatalogOK = catalog, true
+	if len(catalog.Packs) == 0 {
+		m.packCursor, m.packScrollRow = -1, 0
+		return
+	}
+	m.packCursor = min(max(0, previous), len(catalog.Packs)-1)
+	for index, pack := range catalog.Packs {
+		if pack.ID == focusedID {
+			m.packCursor = index
+			break
+		}
+	}
+	m.ensurePackVisible()
+}
+
+func (m *setupModel) focusedPack() *docpacks.Pack {
+	if !m.packCatalogOK || m.packCursor < 0 || m.packCursor >= len(m.packCatalog.Packs) {
+		return nil
+	}
+	return &m.packCatalog.Packs[m.packCursor]
+}
+
+func (m *setupModel) movePackCursor(horizontal, vertical int) {
+	count := len(m.packCatalog.Packs)
+	if count == 0 || m.packCursor < 0 {
+		return
+	}
+	columns := m.packColumns()
+	row, column := m.packCursor/columns, m.packCursor%columns
+	next := m.packCursor
+	if horizontal < 0 && column > 0 {
+		next--
+	} else if horizontal > 0 && column+1 < columns && next+1 < count {
+		next++
+	} else if vertical < 0 && row > 0 {
+		next -= columns
+	} else if vertical > 0 {
+		if next+columns < count {
+			next += columns
+		} else if row < (count-1)/columns {
+			next = count - 1
+		}
+	}
+	m.packCursor = next
+	m.packMessage = ""
+	m.ensurePackVisible()
+}
+
+func (m *setupModel) ensurePackVisible() {
+	if m.packCursor < 0 {
+		m.packScrollRow = 0
+		return
+	}
+	row := m.packCursor / m.packColumns()
+	visible := m.packVisibleRows()
+	totalRows := (len(m.packCatalog.Packs) + m.packColumns() - 1) / m.packColumns()
+	m.packScrollRow = min(m.packScrollRow, max(0, totalRows-visible))
+	if row < m.packScrollRow {
+		m.packScrollRow = row
+	} else if row >= m.packScrollRow+visible {
+		m.packScrollRow = row - visible + 1
+	}
+}
+
+func (m *setupModel) toggleAllPacks() {
+	selectAll := false
+	for _, pack := range m.packCatalog.Packs {
+		if !m.packSelected[pack.ID] {
+			selectAll = true
+			break
+		}
+	}
+	for _, pack := range m.packCatalog.Packs {
+		m.packSelected[pack.ID] = selectAll
+	}
+	if selectAll {
+		m.packMessage = "selected all"
+	} else {
+		m.packMessage = "cleared all"
+	}
+}
+
+func (m *setupModel) packStatus(pack docpacks.Pack) string {
+	installed, ok := m.packActive[pack.ID]
+	if !ok {
+		return "available"
+	}
+	if m.packUnlisted[pack.ID] {
+		return "installed · unlisted"
+	}
+	if installed.SHA256 != pack.SHA256 {
+		return "update"
+	}
+	return "installed"
+}
+
+func (m *setupModel) selectedPackIDs() []string {
+	ids := make([]string, 0, len(m.packCatalog.Packs))
+	for _, pack := range m.packCatalog.Packs {
+		if m.packSelected[pack.ID] {
+			ids = append(ids, pack.ID)
+		}
+	}
+	return ids
+}
+
+func (m *setupModel) packSelectionChanged() bool {
+	if !m.packCatalogOK {
+		return false
+	}
+	desired := make(map[string]docpacks.Pack)
+	for _, pack := range m.packCatalog.Packs {
+		if m.packSelected[pack.ID] {
+			desired[pack.ID] = pack
+		}
+	}
+	return !reflect.DeepEqual(m.packActive, desired)
+}
+
+func (m *setupModel) packSelectionSummary() (selected, downloads int, bytes int64, removals int) {
+	if !m.packCatalogOK {
+		for id := range m.packActive {
+			if m.packSelected[id] {
+				selected++
+			}
+		}
+		return selected, 0, 0, 0
+	}
+	available := make(map[string]bool, len(m.packCatalog.Packs))
+	for _, pack := range m.packCatalog.Packs {
+		available[pack.ID] = true
+		if !m.packSelected[pack.ID] {
+			continue
+		}
+		selected++
+		installed, ok := m.packActive[pack.ID]
+		if !ok || installed.SHA256 != pack.SHA256 {
+			downloads++
+			bytes += pack.Bytes
+		}
+	}
+	for id := range m.packActive {
+		if !available[id] || !m.packSelected[id] {
+			removals++
+		}
+	}
+	return selected, downloads, bytes, removals
+}
+
+func (m *setupModel) packSummaryText() string {
+	selected, downloads, bytes, removals := m.packSelectionSummary()
+	text := fmt.Sprintf("%d selected · %d downloads · %s", selected, downloads, formatSetupBytes(bytes))
+	unlisted := 0
+	for id := range m.packUnlisted {
+		if m.packSelected[id] {
+			unlisted++
+		}
+	}
+	if unlisted > 0 {
+		text += fmt.Sprintf(" · %d unlisted retained", unlisted)
+	}
+	if removals > 0 {
+		text += fmt.Sprintf(" · %d removals", removals)
+	}
+	if !m.packCatalogOK {
+		text += " · unchanged"
+	}
+	return text
+}
+
+func (m *setupModel) unlistedPackCount() int { return len(m.packUnlisted) }
+
+func formatSetupBytes(bytes int64) string {
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	value := float64(bytes)
+	unit := "B"
+	for _, candidate := range units {
+		value /= 1024
+		unit = candidate
+		if value < 1024 {
+			break
+		}
+	}
+	number := strings.TrimSuffix(strconv.FormatFloat(value, 'f', 1, 64), ".0")
+	return number + " " + unit
+}
+
 func (m *setupModel) viewSetupSummary() string {
 	var out strings.Builder
 	out.WriteString(setupHeader())
 	out.WriteString("\nAPI tool configuration\n")
+	if m.packManager != nil {
+		out.WriteString("  API packs: " + m.packSummaryText() + "\n")
+	}
 	if setupUsesDefaults(m.settings) {
 		out.WriteString(styleDim.Render("Recommended defaults") + "\n")
 	}
@@ -404,7 +956,19 @@ func (m *setupModel) viewSetupDone() string {
 	var out strings.Builder
 	out.WriteString(setupHeader() + "\n\n")
 	if m.failure != nil && len(m.results) == 0 {
-		out.WriteString(styleError.Render("  "+m.failure.Error()) + "\n\n")
+		out.WriteString(styleError.Render("  "+safeLine(m.failure.Error())) + "\n\n")
+	}
+	if m.packApplyResult.attempted && m.packApplyResult.err == nil {
+		if !m.packApplyResult.changed {
+			fmt.Fprintf(&out, "  API packs: %d active; unchanged.\n", m.packApplyResult.selected)
+		} else if m.packApplyResult.selected == 0 {
+			out.WriteString("  API packs: none selected; managed packs removed and library rebuilt.\n")
+		} else {
+			fmt.Fprintf(&out, "  API packs: %d active; library rebuilt; download budget %s.\n", m.packApplyResult.selected, formatSetupBytes(m.packApplyResult.bytes))
+		}
+		out.WriteByte('\n')
+	} else if m.packManager != nil && !m.packApplyResult.attempted && m.failure == nil {
+		out.WriteString("  API packs: unchanged because the catalog was unavailable.\n\n")
 	}
 	if len(m.results) == 0 && m.failure == nil {
 		out.WriteString("  No clients were selected, so nothing was registered.\n")

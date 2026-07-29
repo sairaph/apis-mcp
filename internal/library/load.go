@@ -3,7 +3,9 @@ package library
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"path"
 	"path/filepath"
@@ -15,8 +17,9 @@ import (
 )
 
 type Source struct {
-	Name string
-	FS   fs.FS
+	Name     string
+	FS       fs.FS
+	Official bool
 }
 
 type catalog struct {
@@ -83,9 +86,12 @@ type sourceFile struct {
 	raw  []byte
 }
 
-func loadCatalog(sources []Source) (*catalog, error) {
+func loadCatalog(sources []Source) (result *catalog, returnErr error) {
+	defer func() {
+		returnErr = errors.Join(returnErr, closeSources(sources))
+	}()
 	type sourceDocuments struct {
-		name      string
+		official  bool
 		documents []documentRecord
 	}
 	var loaded []sourceDocuments
@@ -112,22 +118,22 @@ func loadCatalog(sources []Source) (*catalog, error) {
 		locations := make(map[string][]string)
 		for _, doc := range docs {
 			locations[doc.DocID] = append(locations[doc.DocID], doc.Location)
-			if source.Name != "builtin" {
+			if !source.Official {
 				userFamilies[doc.FamilyID] = true
 			}
 		}
 		if err := validateUniqueDocuments(locations); err != nil {
 			return nil, err
 		}
-		loaded = append(loaded, sourceDocuments{name: source.Name, documents: docs})
+		loaded = append(loaded, sourceDocuments{official: source.Official, documents: docs})
 	}
 
 	var documents []documentRecord
 	locations := make(map[string][]string)
 	for _, source := range loaded {
 		for _, doc := range source.documents {
-			// A user-defined family replaces its built-in counterpart as one unit.
-			if source.name == "builtin" && userFamilies[doc.FamilyID] {
+			// A user-defined family replaces its official counterpart as one unit.
+			if source.official && userFamilies[doc.FamilyID] {
 				continue
 			}
 			locations[doc.DocID] = append(locations[doc.DocID], doc.Location)
@@ -148,6 +154,16 @@ func loadCatalog(sources []Source) (*catalog, error) {
 		families:    families,
 		documents:   documents,
 	}, nil
+}
+
+func closeSources(sources []Source) error {
+	var result error
+	for _, source := range sources {
+		if closer, ok := source.FS.(io.Closer); ok {
+			result = errors.Join(result, closer.Close())
+		}
+	}
+	return result
 }
 
 func validateUniqueDocuments(locations map[string][]string) error {

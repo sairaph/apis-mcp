@@ -34,6 +34,14 @@ jobs:
             echo "VERSION=$VERSION has no tag v$VERSION yet -> will release."
             echo "should=true" >> "$GITHUB_OUTPUT"
           fi
+      - uses: actions/setup-go@v5
+        if: steps.decide.outputs.should == 'true'
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Verify documentation packs
+        if: steps.decide.outputs.should == 'true'
+        run: go run ./internal/cmd/pack verify
       - name: Create and push tag
         if: steps.decide.outputs.should == 'true'
         run: |

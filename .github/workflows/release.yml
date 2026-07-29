@@ -41,10 +41,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require release commit on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
           cache: true
+      - run: go run ./internal/cmd/pack verify
       - run: go vet ./...
       - run: go test ./...
       - run: go vet -tags=dev ./internal/cmd/ingest

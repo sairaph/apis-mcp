@@ -74,13 +74,13 @@ func TestDocsifyCompatibilityDerivesStandardGitHubPagesSource(t *testing.T) {
 	index := filepath.Join(t.TempDir(), "library.sqlite")
 	result, err := ImportDocsify(context.Background(), "Google Spreadsheet", "v1", shellURL.String(), Options{
 		LibraryRoot: root, HTTPClient: client, Rebuild: func(ctx context.Context) error {
-			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
+			return library.Rebuild(ctx, library.Options{UserRoot: root, IndexPath: index})
 		},
 	})
 	if err != nil || result.Pages != 1 || result.Sources != 1 {
 		t.Fatalf("verified GitHub Pages import: %+v, %v", result, err)
 	}
-	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index, ExcludeBuiltin: true})
+	snapshot, err := library.Open(context.Background(), library.Options{UserRoot: root, IndexPath: index})
 	if err != nil {
 		t.Fatal(err)
 	}
